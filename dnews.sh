@@ -37,6 +37,8 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --pointer "› " \
     --marker "✓ " \
     --info=right \
+    --exact \
+    --gap \
     --color="bg+:#3c3836,bg:#282828,fg:#ebdbb2,fg+:#fbf1c7" \
     --color="hl:#fabd2f,hl+:#fe8019,header:#fe8019,info:#fe8019" \
     --color="prompt:#fabd2f,pointer:#fe8019,marker:#b8bb26,border:#504945" \
