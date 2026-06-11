@@ -20,30 +20,47 @@ COUNT=$(sqlite3 ~/.local/share/newsboat/cache.db \
 kill $SPIN_PID 2>/dev/null
 printf "\r\033[K\033[38;5;214m\uf1ea\033[0m  %s unread articles\n" "$COUNT"
 
+VERSION=$(git -C ~/dnews describe --tags --always 2>/dev/null || echo v1.0)
+FOOT=$(printf " \\033[38;5;242mdnews %s  ↵ open   ^A all/unread   ^F fullscreen   ^R reload   Tab/S-Tab next/prev\\033[0m" "$VERSION")
 PROMPT=$(printf ' \uf002  ')
 
 sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     "SELECT title, pubDate, url FROM rss_item WHERE unread = 1 ORDER BY pubDate DESC;" \
+| python3 ~/.config/newsboat/colorize.py \
 | fzf \
     --delimiter $'\x01' \
     --with-nth 1 \
+    --ansi \
+    --exact \
+    --gap \
     --preview "$HOME/.config/newsboat/preview.sh {1} {2} {3}" \
     --preview-window="right:75%" \
     --header "$(~/.config/newsboat/header.sh)" \
     --header-first \
-    --footer " dnews v1.0 · by Velrion Solutions" \
+    --footer "$FOOT" \
     --layout=reverse \
     --prompt "$PROMPT" \
     --pointer "› " \
     --marker "✓ " \
     --info=right \
-    --exact \
-    --gap \
     --color="bg+:#3c3836,bg:#282828,fg:#ebdbb2,fg+:#fbf1c7" \
     --color="hl:#fabd2f,hl+:#fe8019,header:#fe8019,info:#fe8019" \
     --color="prompt:#fabd2f,pointer:#fe8019,marker:#b8bb26,border:#504945" \
-    --color="separator:#504945,scrollbar:#504945,footer:#665c54" \
+    --color="separator:#504945,scrollbar:#504945,footer:#504945" \
     --border=rounded \
     --bind "focus:execute-silent(~/.config/newsboat/mark_read.sh {3})+transform-header(~/.config/newsboat/header.sh)" \
     --bind "enter:execute-silent(nohup xdg-open {3} >/dev/null 2>&1)" \
-    --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)"
+    --bind "tab:down" \
+    --bind "shift-tab:up" \
+    --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)" \
+    --bind "ctrl-f:toggle-preview" \
+    --bind "ctrl-r:execute-silent(newsboat -x reload 2>/dev/null)+reload(
+        MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
+        if [[ \$MODE == unread ]]; then
+            sqlite3 -separator \$'\\x01' ~/.local/share/newsboat/cache.db \
+                'SELECT title, pubDate, url FROM rss_item WHERE unread = 1 ORDER BY pubDate DESC;'
+        else
+            sqlite3 -separator \$'\\x01' ~/.local/share/newsboat/cache.db \
+                'SELECT title, pubDate, url FROM rss_item ORDER BY pubDate DESC;'
+        fi | python3 ~/.config/newsboat/colorize.py
+    )+transform-header(~/.config/newsboat/header.sh)"
