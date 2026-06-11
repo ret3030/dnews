@@ -1,0 +1,13 @@
+# --- České zprávy ---
+https://www.irozhlas.cz/rss/irozhlas/section/ekonomika   "~iRozhlas Ekonomika"
+
+# --- Světové zprávy ---
+https://www.theguardian.com/business/economics/rss        "~Guardian Economics"
+
+# --- Ekonomické blogy ---
+https://noahpinion.blog/feed                              "~Noahpinion"
+https://fredblog.stlouisfed.org/feed                      "~FRED Blog"
+
+# --- Centrální banky ---
+https://www.cnb.cz/en/.content/rss-feed/rss-feed_tz.xml  "~ČNB"
+https://www.bis.org/doclist/all_pressrels.rss             "~BIS"
