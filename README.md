@@ -43,7 +43,7 @@ Feeds reload automatically on launch with a live spinner. Articles are marked as
 ## Install
 
 ```bash
-git clone https://githret3030/dnews
+git clone https://github.com/ret3030/dnews
 cd dnews
 ./install.sh
 ```
