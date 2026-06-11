@@ -14,7 +14,7 @@ spinner() {
 
 spinner &
 SPIN_PID=$!
-newsboat -x reload 2>/dev/null
+newsboat -x reload 2>/dev/null &
 COUNT=$(sqlite3 ~/.local/share/newsboat/cache.db \
     "SELECT count(*) FROM rss_item WHERE unread = 1;")
 kill $SPIN_PID 2>/dev/null
@@ -54,7 +54,7 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --bind "shift-tab:up" \
     --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)" \
     --bind "ctrl-f:toggle-preview" \
-    --bind "ctrl-r:execute-silent(newsboat -x reload 2>/dev/null)+reload(
+    --bind "ctrl-r:execute-silent(newsboat -x reload 2>/dev/null &)+reload(
         MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
         if [[ \$MODE == unread ]]; then
             sqlite3 -separator \$'\\x01' ~/.local/share/newsboat/cache.db \

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-TITLE="$1"
+TITLE=$(echo "$1" | sed "s|^[A-Z]\{2,4\}  ||" | sed "s|  [0-9]\{2\}:[0-9]\{2\}$||")
 TIMESTAMP="$2"
 URL="$3"
-DOMAIN=$(echo "$URL" | grep -oP '(?<=https?://)[^/]+')
+DOMAIN=$(echo "$URL" | grep -oP '(?<=https?://)[^/]+' | sed 's/^www\.//')
 DATE=$(date -d "@$TIMESTAMP" "+%a %d %b %Y  %H:%M" 2>/dev/null || echo "$TIMESTAMP")
 W=${FZF_PREVIEW_COLUMNS:-80}
-TW=$(( W - 6 ))
 SEP=$(printf '%.0s─' $(seq 1 $(( W - 2 ))))
+TW=$(( W - 8 ))
 
 printf "\n"
-printf "   \033[1m\uf1ea  %s\033[0m\n" "$TITLE"
+# Titulek zalamovaný podle šířky preview
+echo "$TITLE" | fold -s -w $TW | sed 's/^/   \x1b[1m/' | sed 's/$/\x1b[0m/'
 printf " %s\n" "$SEP"
 printf "   \033[38;5;214m\uf073  %s    \uf0c1  %s\033[0m\n" "$DATE" "$DOMAIN"
 printf " %s\n" "$SEP"
@@ -34,7 +35,7 @@ for line in sys.stdin:
   | head -150)
 
 if [[ -z "$CONTENT" ]]; then
-    printf "   \033[38;5;242mArticle unavailable — link may be outdated or paywalled\033[0m\n"
+    printf "   \033[38;5;242mArticle unavailable — press Enter to open in browser\033[0m\n"
 else
     echo "$CONTENT"
 fi
