@@ -1,8 +1,10 @@
 import sys
 from urllib.parse import urlparse
 import hashlib
+from datetime import datetime
 
 RESET = '\033[0m'
+DIM   = '\033[38;5;242m'
 
 LABELS = {
     'theguardian.com':         'GRD',
@@ -29,4 +31,6 @@ for line in sys.stdin:
     d = domain(url)
     label = LABELS.get(d, d.split('.')[0].upper()[:3])
     color = color_for(d)
-    print('%s%s%s  %s\x01%s\x01%s' % (color, label, RESET, title, pubdate, url))
+    try: t = datetime.fromtimestamp(int(pubdate)).strftime('%H:%M')
+    except: t = ''
+    print('%s%s%s  %s  %s%s%s\x01%s\x01%s' % (color, label, RESET, title, DIM, t, RESET, pubdate, url))
