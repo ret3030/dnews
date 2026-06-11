@@ -54,6 +54,7 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --bind "shift-tab:up" \
     --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)" \
     --bind "ctrl-f:toggle-preview" \
+    --bind "start,every(180):reload(~/.config/newsboat/toggle.sh)" \
     --bind "ctrl-r:execute-silent(newsboat -x reload 2>/dev/null &)+reload(
         MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
         if [[ \$MODE == unread ]]; then
