@@ -21,7 +21,7 @@ kill $SPIN_PID 2>/dev/null
 printf "\r\033[K\033[38;5;214m\uf1ea\033[0m  %s unread articles\n" "$COUNT"
 
 VERSION=$(git -C ~/dnews describe --tags --always 2>/dev/null || echo v1.0)
-FOOT=$(printf " \\033[38;5;242mdnews %s  ↵ open   ^A all/unread   ^F fullscreen   ^R reload   Tab/S-Tab next/prev\\033[0m" "$VERSION")
+FOOT=$(printf " \\033[38;5;242mdnews %s  ↵ open   / search   ^A all/unread   ^F fullscreen   ^R reload   Tab/S-Tab next/prev\\033[0m" "$VERSION")
 PROMPT=$(printf ' \uf002  ')
 
 sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
@@ -33,6 +33,7 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --ansi \
     --exact \
     --gap \
+    --no-input \
     --preview "$HOME/.config/newsboat/preview.sh {1} {2} {3}" \
     --preview-window="right:75%" \
     --header "$(~/.config/newsboat/header.sh)" \
@@ -48,12 +49,15 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --color="prompt:#fabd2f,pointer:#fe8019,marker:#b8bb26,border:#504945" \
     --color="separator:#504945,scrollbar:#504945,footer:#504945" \
     --border=rounded \
+    --gap \
     --bind "focus:execute-silent(~/.config/newsboat/mark_read.sh {3})+transform-header(~/.config/newsboat/header.sh)" \
     --bind "enter:execute-silent(nohup xdg-open {3} >/dev/null 2>&1)" \
     --bind "tab:down" \
     --bind "shift-tab:up" \
     --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)" \
     --bind "ctrl-f:toggle-preview" \
+    --bind "/:show-input+enable-search" \
+    --bind "esc:clear-query+disable-search+hide-input+first" \
     --bind "start,every(180):reload(
         MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
         if [[ \$MODE == unread ]]; then
