@@ -54,7 +54,16 @@ sqlite3 -separator $'\x01' ~/.local/share/newsboat/cache.db \
     --bind "shift-tab:up" \
     --bind "ctrl-a:reload(~/.config/newsboat/toggle.sh)" \
     --bind "ctrl-f:toggle-preview" \
-    --bind "start,every(180):reload(~/.config/newsboat/toggle.sh)" \
+    --bind "start,every(180):reload(
+        MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
+        if [[ \$MODE == unread ]]; then
+            sqlite3 -separator \$'\\x01' ~/.local/share/newsboat/cache.db \
+                'SELECT title, pubDate, url FROM rss_item WHERE unread = 1 ORDER BY pubDate DESC;'
+        else
+            sqlite3 -separator \$'\\x01' ~/.local/share/newsboat/cache.db \
+                'SELECT title, pubDate, url FROM rss_item ORDER BY pubDate DESC;'
+        fi | python3 ~/.config/newsboat/colorize.py
+    )+transform-header(~/.config/newsboat/header.sh)" \
     --bind "ctrl-r:execute-silent(newsboat -x reload 2>/dev/null &)+reload(
         MODE=\$(cat /tmp/dnews_mode 2>/dev/null || echo unread)
         if [[ \$MODE == unread ]]; then
