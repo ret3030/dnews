@@ -2,10 +2,9 @@ import sys
 from urllib.parse import urlparse
 import hashlib
 from datetime import datetime
-import re
 
-RESET = '\033[0m'
-DIM   = '\033[38;5;242m'
+RESET  = '\033[0m'
+DIM    = '\033[38;5;242m'
 
 def domain(u):
     try: return urlparse(u).netloc.replace('www.', '')
@@ -17,22 +16,37 @@ def color_for(d):
     return '\033[38;5;%dm' % palette[idx]
 
 def tag(d):
-    name = d.split('.')[0].lower()
-    # Odstraň samohlásky kromě první pozice
-    vowels = set('aeiou')
-    if not name:
-        return '???'
-    # První písmeno vždy zachovej, pak filtruj samohlásky
-    result = name[0] + ''.join(c for c in name[1:] if c not in vowels)
-    return result[:3].upper()
+    name = d.split('.')[0].upper()
+    vowels = 'AEIOU'
+    consonants = ''.join(c for c in name if c not in vowels)
+    return (consonants[:3] if len(consonants) >= 3 else name[:3]).ljust(3)
 
-for line in sys.stdin:
-    parts = line.rstrip().split('\x01')
+def time_ago(pubdate):
+    try:
+        diff = datetime.now() - datetime.fromtimestamp(int(pubdate))
+        s = int(diff.total_seconds())
+        if s < 3600: return '%dm ago' % (s // 60)
+        if s < 86400: return '%dh ago' % (s // 3600)
+        return '%dd ago' % (s // 86400)
+    except: return ''
+
+lines = [l.rstrip() for l in sys.stdin]
+parsed = []
+for line in lines:
+    parts = line.split('\x01')
     if len(parts) < 3: continue
-    title, pubdate, url = parts[0], parts[1], parts[2]
+    parsed.append((parts[0], parts[1], parts[2]))
+
+for i, (title, pubdate, url) in enumerate(parsed, 1):
     d = domain(url)
     label = tag(d)
     color = color_for(d)
-    try: t = datetime.fromtimestamp(int(pubdate)).strftime('%H:%M')
-    except: t = ''
-    print('%s%-3s%s  %s  %s%s%s\x01%s\x01%s' % (color, label, RESET, title, DIM, t, RESET, pubdate, url))
+    ago = time_ago(pubdate)
+    num = '%2d.' % i
+    print('%s%s%s  %s%s%s  %s%s · %s · %s%s\x01%s\x01%s' % (
+        DIM, num, RESET,
+        color, label, RESET,
+        title,
+        DIM, ago, d, RESET,
+        pubdate, url
+    ))

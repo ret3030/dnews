@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-TITLE=$(echo "$1" | sed "s|^[A-Z]\{2,4\}  ||" | sed "s|  [0-9]\{2\}:[0-9]\{2\}$||")
+TITLE=$(echo "$1" | python3 -c "import sys,re; t=sys.stdin.read(); t=re.sub(r'\x1b\[[0-9;]*m','',t); t=re.sub(r'^\s*[0-9]+\.\s+[A-Z]{2,3}\s+','',t); t=re.sub(r'\s+·.*','',t); print(t.strip())")
 TIMESTAMP="$2"
 URL="$3"
 DOMAIN=$(echo "$URL" | grep -oP '(?<=https?://)[^/]+' | sed 's/^www\.//')
