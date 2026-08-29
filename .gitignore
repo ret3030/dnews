@@ -1,3 +1,7 @@
 *.db
 *.log
 /tmp/
+.claude/worktrees/
+.claude/parallel-logs/
+.claude/.claude-md-evolved
+.claude/.claude-md-evolved.lock
