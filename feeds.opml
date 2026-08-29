@@ -7,13 +7,11 @@
     <outline text="Zprávy &amp; Trhy">
       <outline text="Patria Online" title="Patria Online" type="rss" xmlUrl="https://www.patria.cz/rss.html"/>
       <outline text="iRozhlas Hlavní zprávy" title="iRozhlas Hlavní zprávy" type="rss" xmlUrl="https://www.irozhlas.cz/rss/irozhlas"/>
-      <outline text="iRozhlas Ekonomika" title="iRozhlas Ekonomika" type="rss" xmlUrl="https://www.irozhlas.cz/rss/irozhlas/section/ekonomika"/>
       <outline text="BBC News" title="BBC News" type="rss" xmlUrl="https://feeds.bbci.co.uk/news/rss.xml"/>
       <outline text="Guardian Business" title="Guardian Business" type="rss" xmlUrl="https://feeds.theguardian.com/theguardian/uk/business/rss"/>
     </outline>
     <outline text="Ekonomie &amp; Centrální banky">
       <outline text="ČNB" title="ČNB" type="rss" xmlUrl="https://www.cnb.cz/cs/.content/rss-feed/rss-feed_00023.rss"/>
-      <outline text="BIS" title="BIS" type="rss" xmlUrl="https://www.bis.org/doclist/rss_all_categories.rss"/>
       <outline text="FRED Blog" title="FRED Blog" type="rss" xmlUrl="https://fredblog.stlouisfed.org/feed/"/>
     </outline>
     <outline text="Tech &amp; Dev">

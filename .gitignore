@@ -5,3 +5,8 @@
 .claude/parallel-logs/
 .claude/.claude-md-evolved
 .claude/.claude-md-evolved.lock
+
+
+# Added by cargo
+
+/target
