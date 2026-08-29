@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `newsboat` (feed fetching/storage into a SQLite cache), `fzf` (the interactive list UI), and `rdrview`
 (Reader View article extraction, same tech as Firefox). There is no compiler, package manager, or test
 suite — this is a bash/python script collection deployed by copying files into `~/.config/newsboat/`.
+It's a deliberately light two-screen tool: a list, and (on `Enter`) a full-screen article view — no
+preview pane, no background refresh daemon, no periodic reload.
 
 ## Install / deploy
 
@@ -15,14 +17,14 @@ suite — this is a bash/python script collection deployed by copying files into
 ./install.sh
 ```
 
-Copies `dnews.sh preview.sh header.sh mark_read.sh strip_links.lua colorize.py categories.sh
+Copies `dnews.sh reader.sh header.sh mark_read.sh strip_links.lua colorize.py categories.sh
 list_query.sh` and `newsboat.config` (renamed to `config`) into `~/.config/newsboat/`, `chmod +x`s the
-shell scripts, and
-checks for dependencies (`fzf`, `newsboat`, `sqlite3`, `rdrview`, `pandoc`, `python3`, `python-ftfy`).
-If `feeds.opml` is present, install.sh also **regenerates** `~/.config/newsboat/urls` from it (backing
-up any existing `urls` to `urls.bak` first) via an inline Python OPML→urls converter — this replaces
-the feed list rather than appending to it, unlike newsboat's own `-i/--import-from-opml` flag (which
-only appends and requires the target `urls` file to already exist).
+shell scripts, and checks for dependencies (`fzf`, `newsboat`, `sqlite3`, `rdrview`, `pandoc`, `python3`,
+`less`, `python-ftfy`). If `feeds.opml` is present, install.sh also **regenerates**
+`~/.config/newsboat/urls` from it (backing up any existing `urls` to `urls.bak` first) via an inline
+Python OPML→urls converter — this replaces the feed list rather than appending to it, unlike newsboat's
+own `-i/--import-from-opml` flag (which only appends and requires the target `urls` file to already
+exist).
 **There is no uninstall/sync-back script** — after editing any file in this repo, re-run `./install.sh`
 (or manually `cp`) to deploy the change, since the live copy in `~/.config/newsboat/` is what actually
 runs.
@@ -53,9 +55,10 @@ category name to a per-process state file (`/tmp/dnews_filter_$$`, cleaned up vi
 reloads the list through `list_query.sh '<category>'`. The `esc` and `ctrl-r` bindings read that same
 state file at execute time (`$(cat $FILTER_STATE)`) so they preserve whichever tab is active instead of
 resetting to "All" — `esc` only clears the search text now, it does not change tabs. `header.sh` also
-takes the state file path as `$1` and renders a second header line listing all tabs with the active one
-highlighted; since it's called via `transform-header(...)` on every relevant binding, keep any new
-binding that changes the tab or article count passing `$FILTER_STATE` through to it.
+takes the state file path as `$1` and renders the tab list inline (single line, active tab bold/bright,
+others dim) alongside the unread count; since it's called via `transform-header(...)` on every relevant
+binding, keep any new binding that changes the tab or article count passing `$FILTER_STATE` through to
+it.
 
 Data flow, entry point `dnews.sh`:
 
@@ -64,42 +67,51 @@ Data flow, entry point `dnews.sh`:
    count feeds fetched so far, against a total read from `~/.config/newsboat/urls`. Critically, the
    script explicitly `wait`s on the reload's PID before querying the DB for the initial list — a prior
    version backgrounded the reload and queried the DB immediately without waiting, which is what caused
-   articles to sometimes not appear until a manual refresh.
+   articles to sometimes not appear until a manual refresh. This is the only reload that happens
+   automatically — there is no periodic/background auto-refresh anywhere in the codebase; a further
+   reload only ever happens on explicit `ctrl-r`.
 2. **List rows** — `sqlite3` queries `rss_item` (all articles, not just unread), using `\x01` as a field
    separator (titles/URLs may contain commas/pipes), piped through `colorize.py`.
-3. **colorize.py** transforms each row: derives a 3-letter source tag from the domain (color-hashed via
-   md5 so each source gets a stable palette color), computes a human "Xm/h/d ago" string, dims the whole
-   row (uniform gray, no source color) when `unread = 0`, and re-emits the `\x01`-delimited row (still
-   carrying raw `pubdate`/`url` as trailing hidden fields) for fzf.
-4. **fzf** renders with `--delimiter $'\x01' --with-nth 1` (only the formatted title column is shown;
-   fields 2/3 = pubDate/url stay available to key bindings via `{2}`/`{3}`).
-5. **Key bindings** (all inline in `dnews.sh`, no separate config): `focus` marks the article read via
-   `mark_read.sh` and refreshes the header; `enter` opens the URL with `xdg-open`; `/` shows the search
-   input; `f1`-`f9` switch category tabs (see Category tabs above); `esc` clears the search text and
-   reloads the current tab (does not change tabs); `ctrl-r` force-reloads feeds from network in the
+3. **colorize.py** transforms each row into a **two-line, NUL-terminated record** (fzf's `--read0`
+   multi-line item format): line 1 is `NN. Title (domain)`, line 2 is an indented `TAG · Xm/h/d ago`
+   meta line — TAG is a 3-letter source tag derived from the domain (color-hashed via md5 so each source
+   gets a stable palette color). Read articles (`unread = 0`) render both lines in uniform dim gray
+   instead of title-bold/tag-colored. The record is `line1\nline2\x01pubdate\x01url\x01raw_title`,
+   terminated with `\0` — field 4 carries the untouched title text specifically so `reader.sh` doesn't
+   have to regex it back out of the styled/multi-line display text.
+4. **fzf** runs with `--read0` (NUL-delimited, multi-line-aware records) and
+   `--delimiter $'\x01' --with-nth 1` (only field 1 — the two display lines — is shown/searched; fields
+   2/3/4 = pubDate/url/raw-title stay available to key bindings via `{2}`/`{3}`/`{4}`).
+5. **Key bindings** (all inline in `dnews.sh`, no separate config): `enter` runs `reader.sh` (see below)
+   via `execute(...)`, which takes over the terminal and returns to the list on exit; `/` shows the
+   search input; `f1`-`f9` switch category tabs (see Category tabs above); `esc` clears the search text
+   and reloads the current tab (does not change tabs); `ctrl-r` force-reloads feeds from network in the
    background and immediately re-queries the current tab (there's no live progress bar for this one — it
    just picks up whatever's already in the cache, so a second `ctrl-r` shortly after may be needed to see
-   newly-fetched content). There is no periodic auto-refresh any more (the old `every(180)` binding was
-   removed) — reload only happens once, at startup.
-6. **Preview pane** — `preview.sh` fetches article body via `rdrview -T title,body -H <url>` (2s
-   timeout), strips JSON/boilerplate noise, fixes encoding with `ftfy`, converts HTML→plain text with
-   `pandoc` using `strip_links.lua` (drops the first `<h1>` since the title is already shown, and
-   inlines link text/discards images), then renders it inside a box-drawing header card (title/date/
-   domain) with a colored left-rule (`▏`) accent down each body line, wrapped/truncated to the preview
-   pane width.
+   newly-fetched content). There is no `focus`-triggered mark-as-read any more — articles are only marked
+   read when actually opened, in `reader.sh`.
+6. **Reader view** — `reader.sh` is invoked on `enter` in place of the old fzf preview pane. It marks the
+   article read via `mark_read.sh` immediately, then fetches the body via `rdrview -T title,body -H
+   <url>` (4s timeout), strips JSON/boilerplate noise, fixes encoding with `ftfy`, converts HTML→plain
+   text with `pandoc` using `strip_links.lua` (drops the first `<h1>` since the title is already shown,
+   and inlines link text/discards images), renders it inside a box-drawing header card (title/date/
+   domain) with a colored left-rule (`▏`) accent down each body line sized to the full terminal width
+   (capped at 100 cols), and pipes the whole thing through `less -R` so long articles scroll — `q` exits
+   back to the fzf list. If rdrview/pandoc yield no content (fetch failure, timeout, paywall), it falls
+   back to opening the URL directly with `xdg-open`.
 
 ## Style notes specific to this repo
 
 - Gruvbox color palette (fixed 256-color codes, e.g. `#282828`/`#fabd2f`/`#fe8019`) and Nerd Font glyphs
-  (``, ``, etc.) are used throughout for the fzf theme, header, and preview — match these
-  when adding UI elements rather than introducing new colors/icons ad hoc.
+  (``, ``, etc.) are used throughout for the fzf theme, header, and reader view — match these
+  when adding UI elements rather than introducing new colors/icons ad hoc. The look favors a flat,
+  minimal list (no borders/boxes in the fzf UI itself — `--border=none`) over heavy chrome.
 - Scripts assume they're deployed at `~/.config/newsboat/` and reference each other via that absolute
-  path (e.g. `dnews.sh` calls `~/.config/newsboat/preview.sh`), not relative paths — this must be
+  path (e.g. `dnews.sh` calls `~/.config/newsboat/reader.sh`), not relative paths — this must be
   preserved for `install.sh`'s flat copy to keep working.
 - `open.sh` is a paywall-workaround opener (checks for 404/410/timeout and falls back to
-  `archive.ph/<url>`) but is not currently wired into `dnews.sh`'s `enter` binding, which uses a plain
+  `archive.ph/<url>`) but is not currently wired into `reader.sh`'s fallback, which uses a plain
   `xdg-open`.
-- `sync.sh` is a standalone background-reload loop (`newsboat -x reload` every 30 min) — separate from
-  the reload-on-launch/`ctrl-r` logic inside `dnews.sh`, intended to be run independently (e.g. as a
-  systemd/cron job) if continuous background sync is wanted, since `dnews.sh` itself only reloads once
-  at startup.
+- There is intentionally no standalone background-reload script (a prior `sync.sh` loop was removed) and
+  no cron/systemd integration — keeping the tool's own footprint to "reload once at launch, or on
+  `ctrl-r`" was an explicit design choice, not an oversight.
