@@ -5,7 +5,7 @@ pub mod theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
 
 use crate::app::{App, Screen};
@@ -101,6 +101,94 @@ pub fn truncate(s: &str, max_width: usize) -> String {
     out
 }
 
+/// Like `truncate`, but operates on a styled `Line` (e.g. the tab bar) instead
+/// of a plain string — cuts partway through a `Span` if needed and appends a
+/// dim ellipsis span, so a row of tabs too wide for the terminal shrinks
+/// cleanly instead of being clipped mid-word at the `Rect` boundary.
+pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
+    let total_width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if total_width <= max_width {
+        return line;
+    }
+    if max_width == 0 {
+        return Line::from(Span::raw(""));
+    }
+    let budget = max_width - 1; // reserve one column for the ellipsis
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for span in line.spans {
+        if used >= budget {
+            break;
+        }
+        let remaining = budget - used;
+        let span_len = span.content.chars().count();
+        if span_len <= remaining {
+            used += span_len;
+            spans.push(span);
+        } else {
+            let cut: String = span.content.chars().take(remaining).collect();
+            spans.push(Span::styled(cut, span.style));
+            break;
+        }
+    }
+    spans.push(Span::styled("…", Style::default().fg(theme::DIM)));
+    Line::from(spans)
+}
+
+/// Like `truncate`, but keeps the *tail* of `s` (ellipsis at the start) —
+/// used for the live search box so the cursor at the end of what you just
+/// typed always stays visible, instead of scrolling off the right edge on a
+/// narrow terminal.
+pub fn truncate_start(s: &str, max_width: usize) -> String {
+    let len = s.chars().count();
+    if len <= max_width {
+        return s.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let skip = len - (max_width - 1);
+    let mut out = String::from("…");
+    out.extend(s.chars().skip(skip));
+    out
+}
+
+/// Greedily packs `phrases` (each an atomic hint like `"j/k scroll"`, never
+/// split mid-phrase) onto as few lines as fit within `max_width` columns,
+/// joining same-line phrases with `sep`. Used to grow a footer hint bar to
+/// two (or more) lines on a narrow terminal instead of silently clipping
+/// whatever hint ran past the edge.
+pub fn wrap_hints(phrases: &[&str], sep: &str, max_width: usize) -> Vec<String> {
+    if phrases.is_empty() {
+        return vec![String::new()];
+    }
+    let sep_len = sep.chars().count();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+
+    for phrase in phrases {
+        let phrase_len = phrase.chars().count();
+        let extra = if current.is_empty() {
+            phrase_len
+        } else {
+            sep_len + phrase_len
+        };
+        if !current.is_empty() && current_len + extra > max_width {
+            lines.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        if !current.is_empty() {
+            current.push_str(sep);
+            current_len += sep_len;
+        }
+        current.push_str(phrase);
+        current_len += phrase_len;
+    }
+    lines.push(current);
+    lines
+}
+
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// A braille-dot spinner frame, advanced once per tick while something is
@@ -114,9 +202,63 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+
+    use super::{truncate_line, truncate_start, wrap_hints};
     use crate::app::App;
     use crate::feed::Feed;
     use crate::store::{NewArticle, Store};
+
+    #[test]
+    fn truncate_line_shrinks_a_multi_span_line_to_fit_with_an_ellipsis() {
+        let line = Line::from(vec![
+            Span::styled("All", Style::default()),
+            Span::styled(" · ", Style::default()),
+            Span::styled("Zprávy a Trhy", Style::default()),
+            Span::styled(" · ", Style::default()),
+            Span::styled("Saved", Style::default()),
+        ]);
+        let short = truncate_line(line.clone(), 100);
+        let short_text: String = short.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(short_text, "All · Zprávy a Trhy · Saved");
+
+        let cut = truncate_line(line, 10);
+        let cut_text: String = cut.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(cut_text.chars().count(), 10);
+        assert!(
+            cut_text.ends_with('…'),
+            "expected an ellipsis, got {cut_text:?}"
+        );
+        assert!(
+            !cut_text.contains("Saved"),
+            "should have cut before reaching the last tab"
+        );
+    }
+
+    #[test]
+    fn wrap_hints_packs_phrases_onto_as_few_lines_as_fit() {
+        let phrases = ["one", "two", "three", "four"];
+        // Plenty of room: everything fits on one line.
+        assert_eq!(
+            wrap_hints(&phrases, "  ", 100),
+            vec!["one  two  three  four".to_string()]
+        );
+        // Only enough room for two phrases per line.
+        let wrapped = wrap_hints(&phrases, "  ", 10);
+        assert_eq!(wrapped, vec!["one  two", "three", "four"]);
+        // Never splits a single phrase across lines, even if it alone
+        // exceeds max_width.
+        let wrapped = wrap_hints(&["a very long phrase indeed"], "  ", 5);
+        assert_eq!(wrapped, vec!["a very long phrase indeed"]);
+    }
+
+    #[test]
+    fn truncate_start_keeps_the_tail_so_a_trailing_cursor_stays_visible() {
+        assert_eq!(truncate_start("hello", 10), "hello");
+        assert_eq!(truncate_start("hello world", 6), "…world");
+        assert_eq!(truncate_start("hello", 0), "…");
+    }
 
     fn dump(width: u16, height: u16, app: &App) -> String {
         let backend = TestBackend::new(width, height);

@@ -235,6 +235,16 @@ impl App {
         self.screen = Screen::Reader;
     }
 
+    /// Moves the list selection to the next/previous article and loads it
+    /// straight into the still-open full-screen reader — lets Shift+J/K page
+    /// through articles (see `keys::handle_reader`) without dropping back to
+    /// the list first, mirroring the wide split layout's Shift+J/K preview.
+    /// A no-op at either end of the list, same as `move_selection`.
+    pub fn step_reader(&mut self, delta: i32, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
+        self.move_selection(delta);
+        self.load_selected(reader_tx);
+    }
+
     /// Debounces an `activate_selected` call ~150ms out — called from
     /// Shift+J/Shift+K (see `keys::handle_list_wide`) so holding the key
     /// down while browsing doesn't fire a fetch for every article scrolled

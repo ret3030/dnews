@@ -2,6 +2,8 @@
 
 > A fast, minimal terminal news reader with Reader View — one native binary, no subprocess glue.
 
+![dnews list view](docs/screenshot.png)
+
 ## Overview
 
 **dnews** is a single Rust binary: it fetches your RSS/Atom feeds concurrently, stores them in its
@@ -25,7 +27,11 @@ and the UI never blocks or shells out.
   in SQLite so reopening it later doesn't refetch
 - Save articles for later (`s`) — a dedicated "Saved" tab collects them regardless of category, and
   saved articles are never auto-deleted
-- Unsaved articles older than two months are pruned automatically so the list doesn't grow forever
+- Unsaved articles older than two months are pruned automatically so the list doesn't grow forever;
+  a rolling backup of the database is kept as a safety net against a future migration bug, not against
+  ordinary app updates (which never touch the database at all)
+- Responsive to narrow terminals: the tab bar, footer hints, search box, and progress bar all adapt
+  instead of clipping or misaligning
 - Rounded pill-style category tabs, cycled with `Tab`/`Shift+Tab`, driven by `feeds.opml`'s folder
   structure — no separate config
 - Live, non-blocking reload: feeds fetch concurrently in the background, animated progress bar
@@ -66,6 +72,7 @@ dnews
 |-----|--------|
 | `Enter` | Open the selected article full-screen (marks it read) |
 | `q` / `Esc` | Back to the list (from the article) / quit (from the list) |
+| `Shift+J` / `Shift+K` (in the article) | Jump to the next / previous article without leaving the reader |
 
 ### Wide terminal (split list + article panel)
 

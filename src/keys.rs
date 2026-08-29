@@ -19,7 +19,7 @@ pub fn handle(
 
     match app.screen {
         Screen::List => handle_list(app, key, progress_tx, reader_tx, wide)?,
-        Screen::Reader => handle_reader(app, key),
+        Screen::Reader => handle_reader(app, key, reader_tx),
     }
 
     Ok(())
@@ -168,10 +168,12 @@ fn scroll_list(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_reader(app: &mut App, key: KeyEvent) {
+fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.close_reader(),
         KeyCode::Char('s') => app.toggle_saved_selected(),
+        KeyCode::Char('J') => app.step_reader(1, reader_tx),
+        KeyCode::Char('K') => app.step_reader(-1, reader_tx),
         _ => scroll_article(app, key),
     }
 }
@@ -256,6 +258,50 @@ mod tests {
         .unwrap();
 
         assert_eq!(app.screen, Screen::Reader);
+    }
+
+    #[tokio::test]
+    async fn shift_j_and_k_page_through_articles_within_the_full_screen_reader() {
+        let mut app = test_app();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (reader_tx, _reader_rx) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.reader_article.as_ref().unwrap().title, "Newer Story");
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('J')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            app.screen,
+            Screen::Reader,
+            "Shift+J should stay in the reader, not bounce back to the list"
+        );
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.reader_article.as_ref().unwrap().title, "Older Story");
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('K')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.reader_article.as_ref().unwrap().title, "Newer Story");
     }
 
     #[test]

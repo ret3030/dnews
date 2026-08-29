@@ -50,10 +50,15 @@ threaded into `keys::handle`, since it changes which key bindings apply (see Spl
   `saved` included) and separately runs an `ALTER TABLE ... ADD COLUMN saved` wrapped to ignore the
   "duplicate column" error, so older dev DBs from before the save feature don't need to be deleted.
   `prune_old` deletes unsaved articles older than a cutoff (`saved = 0` is part of the `WHERE`, so
-  bookmarks are never touched regardless of age). `Store::open` is cheap (just stores a path) — a
-  fresh `rusqlite::Connection` is opened per call rather than held, since writes happen both from the
-  main task and from a dedicated writer thread (see below); don't introduce a shared `Connection`
-  across threads without re-checking this.
+  bookmarks are never touched regardless of age). `Store::backup()` copies the DB file to a sibling
+  `.bak` path (rolling, single generation) — called from `main.rs` right before `init_schema()` runs on
+  every startup, best-effort (a failed backup must not block startup). This isn't protecting against
+  binary updates (the DB already lives outside the repo/binary, in `~/.local/share/dnews/`, so
+  updating the binary alone can't touch it) — it's a safety net against a future schema-migration bug
+  in `init_schema()` silently losing saved articles; restore with `cp dnews.db.bak dnews.db`.
+  `Store::open` is cheap (just stores a path) — a fresh `rusqlite::Connection` is opened per call
+  rather than held, since writes happen both from the main task and from a dedicated writer thread
+  (see below); don't introduce a shared `Connection` across threads without re-checking this.
 - **`feed/opml.rs`** — parses `feeds.opml` via `roxmltree` (DOM-style, not a streaming parser — the
   file is small) into a flat `Vec<Feed>`, recursively walking `<outline>` elements: a node with an
   `xmlUrl` attribute is a feed (tagged with its *immediate parent's* title/text as `category`, single
@@ -92,9 +97,15 @@ threaded into `keys::handle`, since it changes which key bindings apply (see Spl
   in-memory row and the DB *before* the body is available, then either serves `content_text` straight
   from the DB row if already cached, or spawns a background task that calls `reader::fetch_article`
   and reports back via `ReaderEvent` — so opening an article never blocks the event loop, and also
-  caches the fetched text back into `content_text` for next time. `reader_article` is a **snapshot**
-  of the opened article, not a live lookup via `selected`/`articles` — see its doc comment for why
-  (a background reload reordering `articles` must not repoint what the reader is showing).
+  caches the fetched text back into `content_text` for next time. `step_reader(delta, ...)` moves
+  `selected` (via `move_selection`, clamped, no wraparound) and re-runs `load_selected` in one call —
+  bound to Shift+J/K inside the narrow full-screen reader (`keys::handle_reader`) so you can page
+  through articles without dropping back to the list; no debounce needed here (unlike the wide split
+  layout's preview) since every keypress already commits to viewing that article, and the existing
+  stale-`ReaderEvent` guard already protects against rapid key-repeat racing a slow fetch. `reader_article`
+  is a **snapshot** of the opened article, not a live lookup via `selected`/`articles` — see its doc
+  comment for why (a background reload reordering `articles` must not repoint what the reader is
+  showing).
   `toggle_saved_selected` branches on `screen`: in the narrow reader it flips `reader_article`'s
   `saved` (syncing the copy in `articles`); on the list it flips the selected row directly, splicing
   it out of view immediately if unsaved while on the Saved tab. `prune_old_articles` is called once at
@@ -116,14 +127,24 @@ threaded into `keys::handle`, since it changes which key bindings apply (see Spl
   a title/date/domain header card and a scrollable `Paragraph` using manual `(scroll_y, 0)` offset from
   `app.reader_scroll`; lines starting with `[image:` get a distinct italic/mauve style). Both take a
   bool (`split`/`panel`) distinguishing narrow single-pane rendering from the wide split layout, which
-  changes footer hint text; `article.rs`'s panel footer further branches on `app.panel_focused`.
-  `theme.rs` holds a Catppuccin-Mocha-inspired dark palette (never pure black — that was explicit user
-  feedback on an earlier Gruvbox-black pass) as `Color::Rgb` constants, plus a small
-  FNV-1a-hash-based `source_color()` used to tint each row's domain name (deterministic on purpose —
-  std's default hasher is randomly seeded per process and would reshuffle colors every run). `ui::mod`
-  also has `SPLIT_MIN_WIDTH` (the wide-layout threshold), `centered()` (caps content width on wide
-  terminals), `truncate()` (ellipsizes long status/error text), and `spinner()` (a 10-frame braille
-  spinner driven by `app.spin_frame`).
+  changes footer hint text; `article.rs`'s panel footer further branches on `app.panel_focused`. Both
+  are also responsive at narrow widths rather than just clipping: below `list.rs`'s
+  `COMPACT_TABS_MAX_WIDTH` (70 cols), `render_tabs` swaps the Nerd-Font-dependent pill tabs for a
+  plain-ASCII `compact_tabs_line` (`·`-separated, bold-accent for the active tab, no glyphs that can
+  misrender without a Nerd Font); and both screens size their footer row dynamically
+  (`footer_hint_lines`) instead of a fixed `Constraint::Length(1)`, wrapping the hint text onto a
+  second line via `super::wrap_hints` (greedy phrase-packing that never splits a hint mid-phrase)
+  rather than letting it clip. The live search box uses `super::truncate_start` (ellipsis at the
+  *start*, not the end) so the cursor at the end of what you just typed stays visible instead of
+  scrolling off-screen on a narrow terminal; the loading progress bar's fill width also shrinks to fit
+  whatever room is left after its prefix/suffix text. `theme.rs` holds a Catppuccin-Mocha-inspired dark
+  palette (never pure black — that was explicit user feedback on an earlier Gruvbox-black pass) as
+  `Color::Rgb` constants, plus a small FNV-1a-hash-based `source_color()` used to tint each row's
+  domain name (deterministic on purpose — std's default hasher is randomly seeded per process and would
+  reshuffle colors every run). `ui::mod` also has `SPLIT_MIN_WIDTH` (the wide-layout threshold),
+  `centered()` (caps content width on wide terminals), `truncate()`/`truncate_start()` (ellipsize long
+  text, tail- or head-preserving), `wrap_hints()` (phrase-packing word wrap), and `spinner()` (a
+  10-frame braille spinner driven by `app.spin_frame`).
 
 ### Split layout and panel focus
 
