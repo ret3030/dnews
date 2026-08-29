@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime
 
 RESET = '\033[0m'
+BOLD  = '\033[1m'
 DIM   = '\033[38;5;242m'
 READ  = '\033[38;5;245m'
 
@@ -31,30 +32,27 @@ def time_ago(pubdate):
         return '%dd ago' % (s // 86400)
     except: return ''
 
-lines = [l.rstrip() for l in sys.stdin]
-parsed = []
-for line in lines:
-    parts = line.split('\x01')
-    if len(parts) < 4: continue
-    parsed.append((parts[0], parts[1], parts[2], parts[3]))
-
-for i, (title, pubdate, url, unread) in enumerate(parsed, 1):
+i = 0
+for raw in sys.stdin:
+    parts = raw.rstrip('\n').split('\x01')
+    if len(parts) < 4:
+        continue
+    i += 1
+    title, pubdate, url, unread = parts[0], parts[1], parts[2], parts[3]
     d = domain(url)
     label = tag(d)
     ago = time_ago(pubdate)
     num = '%2d.' % i
+
     if unread == '1':
         color = color_for(d)
-        print('%s%s%s  %s%s%s  %s%s · %s · %s%s\x01%s\x01%s' % (
-            DIM, num, RESET,
-            color, label, RESET,
-            title,
-            DIM, ago, d, RESET,
-            pubdate, url
-        ))
+        line1 = '%s%s%s %s%s%s %s(%s)%s' % (DIM, num, RESET, BOLD, title, RESET, DIM, d, RESET)
+        line2 = '    %s%s%s%s · %s%s' % (color, label, RESET, DIM, ago, RESET)
     else:
-        print('%s%s  %s  %s · %s · %s%s\x01%s\x01%s' % (
-            READ, num, label,
-            title, ago, d, RESET,
-            pubdate, url
-        ))
+        line1 = '%s%s  %s (%s)%s' % (READ, num, title, d, RESET)
+        line2 = '%s    %s · %s%s' % (READ, label, ago, RESET)
+
+    record = '%s\n%s\x01%s\x01%s\x01%s' % (line1, line2, pubdate, url, title)
+    sys.stdout.write(record + '\0')
+
+sys.stdout.flush()

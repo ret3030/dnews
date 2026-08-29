@@ -4,7 +4,7 @@ CONF="$HOME/.config/newsboat"
 mkdir -p "$CONF"
 
 echo "Installing dnews..."
-cp dnews.sh preview.sh header.sh mark_read.sh strip_links.lua colorize.py categories.sh list_query.sh "$CONF/"
+cp dnews.sh reader.sh header.sh mark_read.sh strip_links.lua colorize.py categories.sh list_query.sh "$CONF/"
 chmod +x "$CONF"/*.sh
 cp newsboat.config "$CONF/config"
 
@@ -35,7 +35,7 @@ PYEOF
 fi
 
 echo "Checking dependencies..."
-for dep in fzf newsboat sqlite3 rdrview pandoc python3; do
+for dep in fzf newsboat sqlite3 rdrview pandoc python3 less; do
     command -v "$dep" &>/dev/null && echo "  ✓ $dep" || echo "  ✗ $dep — NOT FOUND"
 done
 

@@ -23,7 +23,7 @@ draw_bar() {
     local fill="" gap="" i
     for (( i = 0; i < filled; i++ )); do fill+="█"; done
     for (( i = 0; i < empty; i++ )); do gap+="░"; done
-    printf "\r${O}${R}  Fetching feeds  ${O}%s${TRACK}%s${R}  %d/%d " "$fill" "$gap" "$done" "$TOTAL"
+    printf "\r${O}${R}  Fetching feeds  ${O}%s${TRACK}%s${R}  %d/%d " "$fill" "$gap" "$done" "$TOTAL"
 }
 
 : > "$LOG"
@@ -41,11 +41,11 @@ draw_bar "$TOTAL"
 rm -f "$LOG"
 
 COUNT=$(sqlite3 "$DB" "SELECT count(*) FROM rss_item WHERE unread = 1;")
-printf "\r\033[K${O}${R}  %s unread articles\n" "$COUNT"
+printf "\r\033[K${O}${R}  %s unread articles\n" "$COUNT"
 
 VERSION=$(git -C ~/dnews describe --tags --always 2>/dev/null || echo v1.0)
-FOOT=$(printf " \\033[38;5;242mdnews %s  ↵ open   / search   ^F fullscreen   ^R reload   Tab/S-Tab next/prev\\033[0m" "$VERSION")
-PROMPT=$(printf '   ')
+FOOT=$(printf " \033[38;5;242mdnews %s  ↵ read   / search   F1-F9 tabs   ^R reload   Tab/S-Tab next/prev\033[0m" "$VERSION")
+PROMPT=$(printf '   ')
 
 # Build F2..F9 key bindings, one per feed category found in urls (F1 is the
 # built-in "All" tab, wired up below alongside esc/ctrl-r).
@@ -61,14 +61,13 @@ done
 
 ~/.config/newsboat/list_query.sh \
 | fzf \
+    --read0 \
     --delimiter $'\x01' \
     --with-nth 1 \
     --ansi \
     --exact \
     --gap \
     --no-input \
-    --preview "$HOME/.config/newsboat/preview.sh {1} {2} {3}" \
-    --preview-window="right:75%" \
     --header "$(~/.config/newsboat/header.sh "$FILTER_STATE")" \
     --header-first \
     --footer "$FOOT" \
@@ -79,15 +78,12 @@ done
     --info=right \
     --color="bg+:#3c3836,bg:#282828,fg:#ebdbb2,fg+:#fbf1c7" \
     --color="hl:#fabd2f,hl+:#fe8019,header:#fe8019,info:#fe8019" \
-    --color="prompt:#fabd2f,pointer:#fe8019,marker:#b8bb26,border:#504945" \
-    --color="separator:#504945,scrollbar:#504945,footer:#504945" \
-    --border=rounded \
-    --gap \
-    --bind "focus:execute-silent(~/.config/newsboat/mark_read.sh {3})+transform-header(~/.config/newsboat/header.sh $FILTER_STATE)" \
-    --bind "enter:execute-silent(nohup xdg-open {3} >/dev/null 2>&1)" \
+    --color="prompt:#fabd2f,pointer:#fe8019,marker:#b8bb26" \
+    --color="footer:#504945" \
+    --border=none \
+    --bind "enter:execute(~/.config/newsboat/reader.sh {4} {2} {3})+transform-header(~/.config/newsboat/header.sh $FILTER_STATE)" \
     --bind "tab:down" \
     --bind "shift-tab:up" \
-    --bind "ctrl-f:toggle-preview" \
     --bind "/:show-input+enable-search" \
     --bind "f1:execute-silent(: > $FILTER_STATE)+first+reload(~/.config/newsboat/list_query.sh)+transform-header(~/.config/newsboat/header.sh $FILTER_STATE)" \
     "${CAT_BINDS[@]}" \
