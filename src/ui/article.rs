@@ -17,12 +17,13 @@ const READ_WIDTH: u16 = 88;
 /// `App::panel_focused` (see `render_footer`).
 pub fn draw(f: &mut Frame, app: &App, area: Rect, panel: bool) {
     let area = super::centered(area, READ_WIDTH);
+    let footer_lines = footer_hint_lines(app, panel, area.width).max(1);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(footer_lines),
         ])
         .split(area);
 
@@ -131,23 +132,52 @@ fn render_body(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(body, inner);
 }
 
-fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
+/// The footer hint, as atomic phrases — used both to render it and, via
+/// `footer_hint_lines`, to size the footer row so a narrow terminal wraps
+/// onto a second line instead of clipping.
+fn footer_hints(app: &App, panel: bool) -> &'static [&'static str] {
     // The split-layout panel's hint depends on whether it currently owns
     // plain-vim-key input (see `App::panel_focused` / `keys::handle_list_wide`).
-    let hint = if !panel {
-        " q/Esc back   j/k scroll   g/G top/bottom   d/u page   s save"
+    if !panel {
+        &[
+            "q/Esc back",
+            "j/k scroll",
+            "g/G top/bottom",
+            "d/u page",
+            "s save",
+            "Shift+J/K next/prev article",
+        ]
     } else if app.panel_focused {
-        " q/Esc unfocus   j/k scroll   g/G top/bottom   d/u page   s save"
+        &[
+            "q/Esc unfocus",
+            "j/k scroll",
+            "g/G top/bottom",
+            "d/u page",
+            "s save",
+        ]
     } else {
-        " ↵ focus to scroll   Shift+J/K browse+preview"
-    };
-    let line = if app.reader_loading {
-        Line::from(Span::styled(hint, Style::default().fg(theme::DIM)))
+        &["↵ focus to scroll", "Shift+J/K browse+preview"]
+    }
+}
+
+fn footer_hint_lines(app: &App, panel: bool, width: u16) -> u16 {
+    let usable = width.saturating_sub(1) as usize;
+    super::wrap_hints(footer_hints(app, panel), "   ", usable).len() as u16
+}
+
+fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
+    let width = area.width.saturating_sub(1) as usize;
+    let style = if app.reader_loading {
+        Style::default().fg(theme::DIM)
     } else {
-        Line::from(vec![Span::styled(hint, Style::default().fg(theme::GRAY))])
+        Style::default().fg(theme::GRAY)
     };
+    let lines: Vec<Line> = super::wrap_hints(footer_hints(app, panel), "   ", width)
+        .into_iter()
+        .map(|l| Line::from(Span::styled(format!(" {l}"), style)))
+        .collect();
     f.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::default().bg(theme::PANEL)),
         area,
     );
 }
