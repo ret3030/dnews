@@ -3,8 +3,9 @@ from urllib.parse import urlparse
 import hashlib
 from datetime import datetime
 
-RESET  = '\033[0m'
-DIM    = '\033[38;5;242m'
+RESET = '\033[0m'
+DIM   = '\033[38;5;242m'
+READ  = '\033[38;5;245m'
 
 def domain(u):
     try: return urlparse(u).netloc.replace('www.', '')
@@ -34,19 +35,26 @@ lines = [l.rstrip() for l in sys.stdin]
 parsed = []
 for line in lines:
     parts = line.split('\x01')
-    if len(parts) < 3: continue
-    parsed.append((parts[0], parts[1], parts[2]))
+    if len(parts) < 4: continue
+    parsed.append((parts[0], parts[1], parts[2], parts[3]))
 
-for i, (title, pubdate, url) in enumerate(parsed, 1):
+for i, (title, pubdate, url, unread) in enumerate(parsed, 1):
     d = domain(url)
     label = tag(d)
-    color = color_for(d)
     ago = time_ago(pubdate)
     num = '%2d.' % i
-    print('%s%s%s  %s%s%s  %s%s · %s · %s%s\x01%s\x01%s' % (
-        DIM, num, RESET,
-        color, label, RESET,
-        title,
-        DIM, ago, d, RESET,
-        pubdate, url
-    ))
+    if unread == '1':
+        color = color_for(d)
+        print('%s%s%s  %s%s%s  %s%s · %s · %s%s\x01%s\x01%s' % (
+            DIM, num, RESET,
+            color, label, RESET,
+            title,
+            DIM, ago, d, RESET,
+            pubdate, url
+        ))
+    else:
+        print('%s%s  %s  %s · %s · %s%s\x01%s\x01%s' % (
+            READ, num, label,
+            title, ago, d, RESET,
+            pubdate, url
+        ))
