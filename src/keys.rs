@@ -95,6 +95,9 @@ fn handle_list(
 /// Independent of that toggle, Shift+J/Shift+K always move the list
 /// selection and schedule a debounced preview load into the panel — so you
 /// can keep the list "in control" while still previewing as you browse.
+/// Category tabs and search are list-only actions, so they (along with
+/// `q`/`Esc`'s own meaning) are gated on focus too — same as the narrow
+/// full-screen reader, `/` and `Tab` do nothing while the panel is focused.
 fn handle_list_wide(
     app: &mut App,
     key: KeyEvent,
@@ -110,18 +113,6 @@ fn handle_list_wide(
         KeyCode::Char('K') => {
             app.move_selection(-1);
             app.schedule_preview();
-            return Ok(());
-        }
-        KeyCode::Char('/') => {
-            app.search_active = true;
-            return Ok(());
-        }
-        KeyCode::Tab => {
-            app.cycle_filter(1)?;
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            app.cycle_filter(-1)?;
             return Ok(());
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -145,12 +136,15 @@ fn handle_list_wide(
     } else {
         match key.code {
             KeyCode::Char('q') => app.should_quit = true,
+            KeyCode::Char('/') => app.search_active = true,
             KeyCode::Esc => {
                 if !app.search.is_empty() {
                     app.search.clear();
                     app.apply_search();
                 }
             }
+            KeyCode::Tab => app.cycle_filter(1)?,
+            KeyCode::BackTab => app.cycle_filter(-1)?,
             _ => scroll_list(app, key),
         }
     }
@@ -440,5 +434,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.selected, 0, "Shift+K should move selection back up");
+    }
+
+    #[tokio::test]
+    async fn tab_and_search_are_no_ops_while_the_panel_is_focused_when_wide() {
+        let mut app = test_app();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (reader_tx, _reader_rx) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            true,
+        )
+        .unwrap();
+        assert!(
+            app.panel_focused,
+            "sanity check: Enter should focus the panel"
+        );
+        let filter_before = app.filter.clone();
+
+        handle(&mut app, key(KeyCode::Tab), &progress_tx, &reader_tx, true).unwrap();
+        assert_eq!(
+            app.filter, filter_before,
+            "Tab must not cycle category tabs while reading in the panel"
+        );
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('/')),
+            &progress_tx,
+            &reader_tx,
+            true,
+        )
+        .unwrap();
+        assert!(
+            !app.search_active,
+            "/ must not open search while reading in the panel"
+        );
     }
 }
