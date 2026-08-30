@@ -1,6 +1,0 @@
-{
-  "_comment": "Auto-parallel: when enabled, the UserPromptSubmit hook (parallel-auto-hook.sh) tells the agent to evaluate whether the request splits into independent modules and, if so, PROPOSE a parallel run. Nothing launches without your explicit go-ahead. Requires running inside tmux (start it with 'dev').",
-  "enabled": false,
-  "maxWindows": 4,
-  "permissionMode": "acceptEdits"
-}

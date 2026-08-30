@@ -1,10 +1,10 @@
 *.db
 *.log
 /tmp/
-.claude/worktrees/
-.claude/parallel-logs/
-.claude/.claude-md-evolved
-.claude/.claude-md-evolved.lock
+
+# Local Claude Code / harness tooling — not shipped in the repo
+.claude/
+CLAUDE.md
 
 
 # Added by cargo
