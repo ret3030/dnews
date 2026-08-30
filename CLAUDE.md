@@ -18,6 +18,16 @@ cargo build --release   # or just ./install.sh, which also installs it
                          # seeds ~/.config/dnews/feeds.opml if none exists
 ```
 
+`install.sh` detects the OS (`uname -s`) and picks per-platform install/config paths: Linux uses
+`~/.local/bin` + `${XDG_CONFIG_HOME:-~/.config}/dnews`, macOS uses `~/.local/bin` +
+`~/Library/Application Support/dnews`, and Git-Bash/MSYS-on-Windows uses `%LOCALAPPDATA%\Programs\dnews`
++ `%APPDATA%\dnews`. `install.ps1` is the native-PowerShell equivalent for Windows without bash (same
+paths as the Git-Bash branch). All three config locations match what `directories`' `BaseDirs`/
+`ProjectDirs` resolve to at runtime, so a seeded `feeds.opml` lands where the binary looks for it. The
+code itself is platform-agnostic (no `cfg(target_os)`, no POSIX syscalls, `reqwest` on `rustls` so no
+system TLS, `rusqlite` bundled so no system SQLite — but the bundled SQLite `cc` build needs an MSVC
+or MinGW C toolchain on Windows).
+
 There is no separate "deploy" step beyond copying the built binary — unlike the old bash version,
 there's nothing to keep in sync between a repo copy and a live copy; the binary is self-contained.
 

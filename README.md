@@ -43,7 +43,11 @@ and the UI never blocks or shells out.
 
 ## Install
 
-Requires the [Rust toolchain](https://rustup.rs) (`cargo`/`rustc`).
+Requires the [Rust toolchain](https://rustup.rs) (`cargo`/`rustc`). On Windows you also need a C
+compiler for the bundled SQLite — the Visual Studio "Desktop development with C++" workload (or the
+standalone Build Tools), or the `x86_64-pc-windows-gnu` toolchain.
+
+**Linux / macOS** (also works from Git Bash on Windows):
 
 ```bash
 git clone https://github.com/ret3030/dnews
@@ -51,8 +55,22 @@ cd dnews
 ./install.sh
 ```
 
-This builds a release binary and installs it to `~/.local/bin/dnews`, and copies `feeds.opml` to
-`~/.config/dnews/feeds.opml` if you don't already have a local one.
+**Windows** (PowerShell):
+
+```powershell
+git clone https://github.com/ret3030/dnews
+cd dnews
+.\install.ps1
+```
+
+Both scripts build a release binary and install it, then copy `feeds.opml` into the OS config
+directory if you don't already have a local one:
+
+| OS | Binary | Config |
+|----|--------|--------|
+| Linux | `~/.local/bin/dnews` | `~/.config/dnews/feeds.opml` |
+| macOS | `~/.local/bin/dnews` | `~/Library/Application Support/dnews/feeds.opml` |
+| Windows | `%LOCALAPPDATA%\Programs\dnews\dnews.exe` | `%APPDATA%\dnews\feeds.opml` |
 
 Edit `feeds.opml` to change your feeds — top-level `<outline>` folders become category tabs. Running
 `dnews` from a directory containing `feeds.opml` uses that file; otherwise it falls back to
