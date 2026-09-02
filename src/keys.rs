@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc;
 
 use crate::app::{App, ReaderEvent, Screen};
@@ -12,6 +12,14 @@ pub fn handle(
     reader_tx: &mpsc::UnboundedSender<ReaderEvent>,
     wide: bool,
 ) -> Result<()> {
+    // The Windows console backend reports both key-down and key-up for every
+    // keystroke, so acting on anything but a press fires each binding twice
+    // (unix terminals only ever send presses, which is why this never showed up
+    // there). `Repeat` is kept so holding a key down still scrolls.
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(());
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.should_quit = true;
         return Ok(());
@@ -240,6 +248,23 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[tokio::test]
+    async fn key_release_events_are_ignored() {
+        // Windows sends a Release for every Press; acting on both would move the
+        // selection two rows per keystroke.
+        let mut app = test_app();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (reader_tx, _reader_rx) = mpsc::unbounded_channel();
+
+        let mut down = key(KeyCode::Char('j'));
+        handle(&mut app, down, &progress_tx, &reader_tx, false).unwrap();
+        assert_eq!(app.selected, 1);
+
+        down.kind = KeyEventKind::Release;
+        handle(&mut app, down, &progress_tx, &reader_tx, false).unwrap();
+        assert_eq!(app.selected, 1, "the release half must not move again");
     }
 
     #[tokio::test]
