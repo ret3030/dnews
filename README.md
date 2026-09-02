@@ -7,6 +7,7 @@
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![TUI: ratatui](https://img.shields.io/badge/TUI-ratatui-4C9A91)](https://ratatui.rs)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-6C7086)](#install)
+[![License: MIT](https://img.shields.io/badge/license-MIT-89B4FA)](LICENSE)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ret3030)
 
 ![dnews list view](docs/screenshot.png)
@@ -25,7 +26,8 @@
 - [How it works](#how-it-works)
 - [Development](#development)
 - [Support](#support)
-- [About the developer](#about-the-developer)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -232,15 +234,19 @@ If dnews saves you time, you can support its development:
 
 ---
 
-## About the developer
+## Contributing
 
-Built by **[Robert Plevac](https://github.com/ret3030)** ([Velrion Solutions](https://github.com/ret3030)) —
-a developer who lives in the terminal and builds tools that stay out of the way.
+Bug reports, feature requests, and pull requests are welcome — open an
+[issue](https://github.com/ret3030/dnews/issues) to get started.
 
-dnews started as a shell script gluing together newsboat, fzf, and rdrview, and was rewritten from
-scratch as a single native Rust binary once the seams in that stack got in the way more than they
-helped. That's the throughline: take a workflow that works but drags, and rebuild it as something
-fast, self-contained, and pleasant to use every day.
+---
 
-Feedback, bug reports, and pull requests are welcome — open an
-[issue](https://github.com/ret3030/dnews/issues).
+## License
+
+Released under the [MIT License](LICENSE).
+
+---
+
+## Built by
+
+[Velrion Solutions](https://github.com/ret3030)
