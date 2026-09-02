@@ -247,6 +247,6 @@ Released under the [MIT License](LICENSE).
 
 ---
 
-## Built by
+## Author
 
-[Velrion Solutions](https://github.com/ret3030)
+Built and maintained by [**@ret3030**](https://github.com/ret3030).
