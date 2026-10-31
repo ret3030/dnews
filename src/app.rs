@@ -22,9 +22,8 @@ pub enum Screen {
 }
 
 pub enum ReaderEvent {
-    /// Carries the article `link` the fetch was for, so a late response for
-    /// an article the user has since navigated away from can be told apart
-    /// from the one currently on screen (see `App::reader_article`).
+    /// Tagged with the article link, so a late result for an article the
+    /// user already left is ignored.
     Loaded(String, ReaderContent),
     Failed(String, String),
 }
@@ -52,21 +51,13 @@ pub struct App {
 
     pub screen: Screen,
     pub reader: Option<ReaderContent>,
-    /// A snapshot of the article currently shown (or loading) in the reader,
-    /// taken at the moment it was opened. Deliberately **not** looked up via
-    /// `selected`/`articles` on every render: a background feed reload can
-    /// rebuild `articles` (new items shift everyone's sort position) while
-    /// the user is reading, which would silently repoint `selected` at a
-    /// different article and show its title/date over the real one's body.
-    /// Also doubles as the article-identity check for a late `ReaderEvent`
-    /// (see `apply_reader_event`).
+    /// Copy of the article in the reader, taken when it was opened. Not looked
+    /// up through `selected`, because a background reload can reorder
+    /// `articles` while it is being read.
     pub reader_article: Option<ArticleRow>,
     pub reader_scroll: u16,
-    /// Largest useful `reader_scroll` for the article as last rendered:
-    /// wrapped line count minus the visible body height. Written by the
-    /// renderer (which only gets `&App`, hence the `Cell`) and read by the
-    /// scroll keys so `G`, `j` and `d` stop at the end of the text instead of
-    /// scrolling into blank space. `u16::MAX` until the first render.
+    /// Last useful scroll offset, set while drawing (hence the `Cell`) so the
+    /// scroll keys stop at the end of the text. `u16::MAX` until drawn.
     pub reader_max_scroll: Cell<u16>,
     pub reader_loading: bool,
     pub reader_error: Option<String>,
@@ -92,17 +83,10 @@ pub struct App {
     pub overlay: Overlay,
     pub spin_frame: usize,
 
-    /// In the wide split layout only: whether plain vim keys currently
-    /// target the preview panel (`true`, set by `Enter`) or the list
-    /// (`false`, the default) — see `keys::handle_list_wide`. Independent
-    /// of `screen`, which always stays `List` in that layout since both
-    /// panes are drawn at once.
+    /// Wide split layout only: plain keys scroll the article panel instead of
+    /// moving through the list. `screen` stays `List` there.
     pub panel_focused: bool,
-    /// When set, the main loop's debounce timer calls `activate_selected`
-    /// at this instant — used by Shift+J/Shift+K (see `keys.rs`) to preview
-    /// the newly-focused list item a beat after browsing settles, rather
-    /// than firing a fetch for every article scrolled past while the key
-    /// is held down.
+    /// When the main loop should load the selection into the panel.
     pub preview_due_at: Option<std::time::Instant>,
 
     pub should_quit: bool,
@@ -163,12 +147,9 @@ impl App {
         fetch::spawn_reload(self.feeds.clone(), self.db.path().to_path_buf(), tx.clone());
     }
 
-    /// Deletes unsaved articles older than [`PRUNE_AFTER_SECS`]. Must be
-    /// called after *every* reload completes, not just once at startup —
-    /// a feed can keep re-serving the same old item in its current XML
-    /// (slow-rotating feeds like FRED/ČNB do this), and `upsert_batch`
-    /// doesn't filter by age, so pruning only before the first reload would
-    /// let that reload immediately reintroduce whatever was just pruned.
+    /// Deletes unsaved articles older than [`PRUNE_AFTER_SECS`]. Runs after
+    /// every reload, because slow feeds keep serving old items that the
+    /// reload would otherwise bring straight back.
     pub fn prune_old_articles(&self) {
         let cutoff = chrono::Utc::now().timestamp() - PRUNE_AFTER_SECS;
         let _ = self.db.prune_old(cutoff);
@@ -305,38 +286,14 @@ impl App {
         }
     }
 
-    /// Marks the selected article read locally (optimistic) and in the DB,
-    /// switches to the full-screen reader, and kicks off content loading
-    /// (cached or fetched in the background).
-    pub fn open_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
-        self.load_selected(reader_tx);
-        self.screen = Screen::Reader;
-    }
-
-    /// Moves the list selection to the next/previous article and loads it
-    /// straight into the still-open full-screen reader — lets Shift+J/K page
-    /// through articles (see `keys::handle_reader`) without dropping back to
-    /// the list first, mirroring the wide split layout's Shift+J/K preview.
-    /// A no-op at either end of the list, same as `move_selection`.
-    pub fn step_reader(&mut self, delta: i32, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
-        self.move_selection(delta);
-        self.load_selected(reader_tx);
-    }
-
-    /// Debounces an `activate_selected` call ~150ms out — called from
-    /// Shift+J/Shift+K (see `keys::handle_list_wide`) so holding the key
-    /// down while browsing doesn't fire a fetch for every article scrolled
-    /// past, only the one it settles on.
+    /// Previews the selection after a short pause, so holding Shift+J
+    /// doesn't fetch every article passed on the way.
     pub fn schedule_preview(&mut self) {
         self.preview_due_at =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
     }
 
-    /// Loads the selected article into the wide-layout preview panel (see
-    /// `ui::SPLIT_MIN_WIDTH`) — bound to `Enter` there (which also focuses
-    /// the panel for plain-vim-key scrolling) and to the Shift+J/K preview
-    /// debounce (which does not). Does nothing if that article is already
-    /// loaded there.
+    /// Loads the selection into the panel unless it is already there.
     pub fn activate_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
         let Some(row) = self.selected_article() else {
             return;
@@ -347,12 +304,9 @@ impl App {
         self.load_selected(reader_tx);
     }
 
-    /// Marks the selected article read and populates `reader`/`reader_article`
-    /// with its content (cached, or fetched in the background) — shared by
-    /// `open_selected` (full-screen, on Enter in narrow terminals) and
-    /// `activate_selected` (the split-layout panel, on Enter there too),
-    /// neither of which touches `self.screen` here.
-    fn load_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
+    /// Marks the selected article read and shows it in the reader, from the
+    /// cache or fetched in the background.
+    pub fn load_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
         let Some(row) = self.selected_article().cloned() else {
             return;
         };
@@ -509,11 +463,8 @@ impl App {
         self.reload_view()
     }
 
-    /// Applies a background reader fetch's result, but only if it's still
-    /// for the article currently open — a fetch started for an article the
-    /// user has since navigated away from can complete late, and without
-    /// this check it would silently overwrite whatever's now on screen with
-    /// the wrong article's text.
+    /// Applies a finished fetch, unless the user has moved on to another
+    /// article in the meantime.
     pub fn apply_reader_event(&mut self, event: ReaderEvent) {
         let current = self.reader_article.as_ref().map(|a| a.link.as_str());
         match event {
@@ -576,8 +527,7 @@ mod tests {
         assert_eq!(app.reader.as_ref().unwrap().plain_text(), "B's content");
         assert!(!app.reader_loading);
 
-        // A's fetch finally completes — it must NOT overwrite B's content,
-        // since the user is no longer looking at article A.
+        // A's late result must not replace B, which is now on screen.
         app.apply_reader_event(ReaderEvent::Loaded(
             "https://example.com/a".into(),
             ReaderContent::from_plain("A's content"),

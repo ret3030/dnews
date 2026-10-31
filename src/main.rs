@@ -63,11 +63,8 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new(db, feeds);
     app.prune_old_articles();
 
-    // Deliberately not enabling mouse capture: doing so would take over the
-    // terminal's native click-drag text selection (copy/paste), which
-    // matters more here than custom scroll-wheel handling — most terminals
-    // still translate the wheel into Up/Down key presses on their own when
-    // capture is off, so scrolling still works, just via `keys::handle`.
+    // No mouse capture: it would disable the terminal's own text selection.
+    // Terminals still turn the wheel into arrow keys.
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app).await;
     ratatui::restore();

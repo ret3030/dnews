@@ -43,11 +43,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, split: bool) {
     );
 }
 
-/// The pill-style tab bar needs a Nerd Font for its powerline cap glyphs
-/// (`LEFT_CAP`/`RIGHT_CAP`) and enough columns for every category to get its
-/// own pill. Below this, `render_tabs` falls back to plain-text tabs with no
-/// special glyphs — still fully functional, just less decorative, and immune
-/// to the column-width ambiguity those glyphs have without a Nerd Font.
+/// Below this width the pill tabs (which need a Nerd Font for their caps)
+/// give way to plain text tabs.
 const COMPACT_TABS_MAX_WIDTH: u16 = 70;
 
 fn tab_labels(app: &App) -> Vec<(String, bool)> {
@@ -87,10 +84,7 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Plain-text fallback tab bar: no powerline caps, active tab shown via
-/// bold accent color and `·` separators only — every glyph here is a normal
-/// single-width ASCII/Unicode character, so it never misaligns regardless of
-/// font support, and reads fine even heavily wrapped/clipped on tiny widths.
+/// Plain text tabs separated by `·`; safe without a Nerd Font.
 fn compact_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
     let panel = Style::default().bg(theme::PANEL);
     let mut spans: Vec<Span> = vec![Span::styled(" ", panel)];
@@ -119,9 +113,6 @@ fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
     let mut spans: Vec<Span> = vec![Span::styled(" ", panel)];
 
     for (label, active) in labels {
-        // The Saved tab's bookmark icon is decorative and Nerd-Font-
-        // dependent like the pill caps themselves, so it only shows up
-        // here — the compact fallback tabs never use it.
         let text = if *label == "Saved" {
             format!(" \u{f005} {label} ")
         } else {
@@ -339,9 +330,7 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, list_area, &mut state);
 }
 
-/// The default (no search/loading/status) footer hint, as atomic phrases —
-/// used both to render it and, via `footer_hint_lines`, to size the footer
-/// row so a narrow terminal wraps onto a second line instead of clipping.
+/// Key hints for the footer when nothing else is shown there.
 fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
     if !split {
         &["↵ read", "/ search", "Tab tabs", "? help", "q quit"]

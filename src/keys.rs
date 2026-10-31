@@ -12,10 +12,8 @@ pub fn handle(
     reader_tx: &mpsc::UnboundedSender<ReaderEvent>,
     wide: bool,
 ) -> Result<()> {
-    // The Windows console backend reports both key-down and key-up for every
-    // keystroke, so acting on anything but a press fires each binding twice
-    // (unix terminals only ever send presses, which is why this never showed up
-    // there). `Repeat` is kept so holding a key down still scrolls.
+    // Windows also reports key releases; acting on them would fire every
+    // binding twice. Repeats are kept so holding a key scrolls.
     if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return Ok(());
     }
@@ -164,7 +162,10 @@ fn handle_list(
             app.search.clear();
             app.apply_search();
         }
-        KeyCode::Enter => app.open_selected(reader_tx),
+        KeyCode::Enter => {
+            app.load_selected(reader_tx);
+            app.screen = Screen::Reader;
+        }
         KeyCode::Tab => app.cycle_filter(1)?,
         KeyCode::BackTab => app.cycle_filter(-1)?,
         _ => scroll_list(app, key),
@@ -194,8 +195,14 @@ fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender
             app.screen = Screen::List;
         }
         KeyCode::Char('s') => app.toggle_saved(),
-        KeyCode::Char('J') => app.step_reader(1, reader_tx),
-        KeyCode::Char('K') => app.step_reader(-1, reader_tx),
+        KeyCode::Char('J' | 'K') => {
+            app.move_selection(if key.code == KeyCode::Char('J') {
+                1
+            } else {
+                -1
+            });
+            app.load_selected(reader_tx);
+        }
         _ => scroll_article(app, key),
     }
 }
@@ -464,8 +471,7 @@ mod tests {
         );
         assert!(
             app.reader_article.is_none(),
-            "returning to plain list browsing should unload the panel — it only \
-             lights back up via Enter or the Shift+J/K live preview"
+            "leaving the panel empties it until Enter or Shift+J/K loads one"
         );
 
         // With focus back on the list, plain j now browses again.

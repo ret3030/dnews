@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-// Base surfaces — Catppuccin Mocha inspired: dark blue-slate, never pure black.
+// Base surfaces, Catppuccin Mocha inspired: dark blue slate, never pure black.
 pub const BG: Color = Color::Rgb(0x1e, 0x1e, 0x2e);
 pub const PANEL: Color = Color::Rgb(0x2a, 0x2b, 0x3d);
 pub const SEL_BG: Color = Color::Rgb(0x35, 0x37, 0x4a);

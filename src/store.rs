@@ -242,8 +242,8 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes articles published before `cutoff` (unix epoch seconds) —
-    /// saved articles are always kept, regardless of age.
+    /// Deletes articles published before `cutoff` (unix seconds), except
+    /// saved ones.
     pub fn prune_old(&self, cutoff: i64) -> Result<usize> {
         let conn = &self.conn;
         Ok(conn.execute(
@@ -353,8 +353,7 @@ mod tests {
         let backup_path = store.path().with_extension("db.bak");
         assert!(backup_path.exists(), "backup file was not created");
 
-        // The backup is a real, independently openable DB with the same
-        // saved article — not just a byte-identical file we trust blindly.
+        // The backup opens as a DB on its own and still has the article.
         let restored = Store::open(&backup_path).unwrap();
         let saved: Vec<String> = restored
             .list(&ListFilter::Saved)

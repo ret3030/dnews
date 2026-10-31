@@ -13,15 +13,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Screen};
 
-/// Below this terminal width, the list screen is single-pane: `Enter` opens
-/// the full-screen reader (see `Screen::Reader`). At or above it, the list
-/// splits into the list and an article preview panel side by side instead
-/// — see `App::panel_focused` and `keys::handle_list_wide` for how keyboard
-/// focus moves between the two.
+/// From this terminal width the list and the article sit side by side;
+/// below it the article opens full screen.
 pub const SPLIT_MIN_WIDTH: u16 = 150;
 
-/// Draws the app chrome — an orange top/bottom rule with "dnews" in the top
-/// one — and hands the inner content area to the active screen.
+/// Draws the frame (top and bottom rule, "dnews" title) and the active screen.
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
@@ -85,9 +81,7 @@ pub fn time_ago(published: i64) -> String {
     }
 }
 
-/// Truncates `s` to fit within `max_width` display columns, appending an
-/// ellipsis if it had to cut — keeps long error/status text from ever
-/// overflowing its bar.
+/// Cuts `s` to `max_width` display columns, ending in an ellipsis if cut.
 pub fn truncate(s: &str, max_width: usize) -> String {
     if s.width() <= max_width {
         return s.to_string();
@@ -243,10 +237,7 @@ pub fn wrap(
     lines
 }
 
-/// Like `truncate`, but operates on a styled `Line` (e.g. the tab bar) instead
-/// of a plain string — cuts partway through a `Span` if needed and appends a
-/// dim ellipsis span, so a row of tabs too wide for the terminal shrinks
-/// cleanly instead of being clipped mid-word at the `Rect` boundary.
+/// `truncate` for a styled line, such as the tab bar.
 pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
     let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
     if total_width <= max_width {
@@ -286,10 +277,7 @@ pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Like `truncate`, but keeps the *tail* of `s` (ellipsis at the start) —
-/// used for the live search box so the cursor at the end of what you just
-/// typed always stays visible, instead of scrolling off the right edge on a
-/// narrow terminal.
+/// `truncate` that keeps the end, so the search box cursor stays visible.
 pub fn truncate_start(s: &str, max_width: usize) -> String {
     if s.width() <= max_width {
         return s.to_string();
@@ -307,11 +295,7 @@ pub fn truncate_start(s: &str, max_width: usize) -> String {
     std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
-/// Greedily packs `phrases` (each an atomic hint like `"j/k scroll"`, never
-/// split mid-phrase) onto as few lines as fit within `max_width` columns,
-/// joining same-line phrases with `sep`. Used to grow a footer hint bar to
-/// two (or more) lines on a narrow terminal instead of silently clipping
-/// whatever hint ran past the edge.
+/// Packs key hints onto as few lines as fit, never splitting a hint.
 pub fn wrap_hints(phrases: &[&str], sep: &str, max_width: usize) -> Vec<String> {
     if phrases.is_empty() {
         return vec![String::new()];
@@ -345,8 +329,7 @@ pub fn wrap_hints(phrases: &[&str], sep: &str, max_width: usize) -> Vec<String> 
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// A braille-dot spinner frame, advanced once per tick while something is
-/// loading in the background (feed reload, article fetch).
+/// Spinner frame for background loading.
 pub fn spinner(frame: usize) -> char {
     SPINNER[frame % SPINNER.len()]
 }
@@ -477,7 +460,7 @@ mod tests {
         assert!(out.contains("Rust is great"), "article title missing");
         assert!(out.contains("unread"), "unread counter missing");
         assert!(out.contains('─'), "top/bottom border rule missing");
-        // Top/bottom only — no vertical `│` down the sides.
+        // Top and bottom rules only, no side borders.
         assert!(!out.contains('│'), "a side border crept back in");
 
         let _ = std::fs::remove_file(&path);
