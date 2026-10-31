@@ -743,4 +743,45 @@ mod tests {
         }
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn the_selection_stays_visible_with_correct_day_headings() {
+        let now = chrono::Utc::now().timestamp();
+        // Three articles a day over twenty days, newest first.
+        let articles: Vec<NewArticle> = (0..60)
+            .map(|i| NewArticle {
+                category: "World".into(),
+                title: format!("Story {i:02}"),
+                link: format!("https://example.com/{i}"),
+                published: now - (i as i64 / 3) * 86_400 - (i as i64 % 3) * 60,
+                ..Default::default()
+            })
+            .collect();
+        let (mut app, path) = app_with(&articles, "window");
+        let today = chrono::Local::now().date_naive();
+        for selected in [0, 1, 13, 30, 47, 59] {
+            app.selected = selected;
+            let out = dump(80, 20, &app);
+            let story = format!("Story {selected:02}");
+            assert!(
+                out.contains(&story),
+                "selected {story} not on screen:\n{out}"
+            );
+            // The heading above it (if shown) belongs to its day.
+            let lines: Vec<&str> = out.lines().collect();
+            let at = lines.iter().position(|l| l.contains(&story)).unwrap();
+            if let Some(heading) = lines[..at]
+                .iter()
+                .rev()
+                .find(|l| l.contains('─') && !l.contains("dnews"))
+            {
+                let expected = super::list::day_label(app.articles[selected].published, today);
+                assert!(
+                    heading.contains(&expected),
+                    "{story} under {heading:?}, expected {expected}"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }

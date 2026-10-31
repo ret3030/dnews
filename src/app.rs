@@ -156,15 +156,11 @@ impl App {
         }
     }
 
-    pub fn db_path(&self) -> std::path::PathBuf {
-        self.db.path()
-    }
-
     pub fn start_reload(&mut self, tx: &mpsc::UnboundedSender<FetchEvent>) {
         self.loading = true;
         self.status.clear();
         self.feed_errors.clear();
-        fetch::spawn_reload(self.feeds.clone(), self.db_path(), tx.clone());
+        fetch::spawn_reload(self.feeds.clone(), self.db.path().to_path_buf(), tx.clone());
     }
 
     /// Deletes unsaved articles older than [`PRUNE_AFTER_SECS`]. Must be
@@ -404,7 +400,7 @@ impl App {
         self.reader_loading = true;
 
         let link = row.link.clone();
-        let db_path = self.db_path();
+        let db_path = self.db.path().to_path_buf();
         let tx = reader_tx.clone();
 
         tokio::spawn(async move {

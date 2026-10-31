@@ -292,14 +292,22 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
     let list_area = inner[1];
     let width = list_area.width as usize;
 
-    // Day separators are extra list items, so the selection index into
-    // `filtered` is mapped to its position among all items.
+    // Only articles that can be on screen are built: a screen's worth on
+    // each side of the selection (every entry is at least one line tall).
+    // Day separators are extra items, so the selection is re-indexed.
     let today = Local::now().date_naive();
-    let mut items = Vec::with_capacity(app.filtered.len() + 8);
+    let reach = list_area.height as usize;
+    let start = app.selected.saturating_sub(reach);
+    let end = (app.selected + reach + 1).min(app.filtered.len());
+    let article_at = |pos: usize| app.filtered.get(pos).and_then(|&i| app.articles.get(i));
+    let mut last_day = start
+        .checked_sub(1)
+        .and_then(article_at)
+        .map(|row| day_label(row.published, today));
+    let mut items = Vec::with_capacity(2 * (end - start));
     let mut selected_item = 0;
-    let mut last_day: Option<String> = None;
-    for (pos, &idx) in app.filtered.iter().enumerate() {
-        let Some(row) = app.articles.get(idx) else {
+    for pos in start..end {
+        let Some(row) = article_at(pos) else {
             continue;
         };
         let day = day_label(row.published, today);

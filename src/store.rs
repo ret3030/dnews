@@ -4,6 +4,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 
 pub struct Store {
+    conn: Connection,
     path: std::path::PathBuf,
 }
 
@@ -42,21 +43,22 @@ pub enum ListFilter {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        // The feed writer and the article cache write from other threads
+        // through their own connections; wait for their lock, don't fail.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Self {
+            conn,
             path: path.to_path_buf(),
         })
     }
 
-    fn conn(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.path)?)
-    }
-
-    pub fn path(&self) -> std::path::PathBuf {
-        self.path.clone()
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn init_schema(&self) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS articles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,60 +90,35 @@ impl Store {
     }
 
     pub fn list(&self, filter: &ListFilter) -> Result<Vec<ArticleRow>> {
-        let conn = self.conn()?;
-        let mut rows = Vec::new();
-        let mut push = |r: &rusqlite::Row| -> rusqlite::Result<()> {
-            rows.push(ArticleRow {
+        let (condition, category) = match filter {
+            ListFilter::All => ("1", None),
+            ListFilter::Category(c) => ("category = ?1", Some(c)),
+            ListFilter::Saved => ("saved = 1", None),
+        };
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT title, link, published, unread, saved, content_text, source, summary,
+                    scroll_pos
+             FROM articles WHERE {condition} ORDER BY published DESC"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(category), |r| {
+            Ok(ArticleRow {
                 title: r.get(0)?,
                 link: r.get(1)?,
                 published: r.get(2)?,
-                unread: r.get::<_, i64>(3)? != 0,
-                saved: r.get::<_, i64>(4)? != 0,
+                unread: r.get(3)?,
+                saved: r.get(4)?,
                 content_text: r.get(5)?,
                 source: r.get(6)?,
                 summary: r.get(7)?,
                 scroll_pos: r.get(8)?,
-            });
-            Ok(())
-        };
-
-        const COLS: &str =
-            "title, link, published, unread, saved, content_text, source, summary, scroll_pos";
-        match filter {
-            ListFilter::All => {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT {COLS} FROM articles ORDER BY published DESC"
-                ))?;
-                let mut it = stmt.query([])?;
-                while let Some(r) = it.next()? {
-                    push(r)?;
-                }
-            }
-            ListFilter::Category(cat) => {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT {COLS} FROM articles WHERE category = ?1 ORDER BY published DESC"
-                ))?;
-                let mut it = stmt.query(params![cat])?;
-                while let Some(r) = it.next()? {
-                    push(r)?;
-                }
-            }
-            ListFilter::Saved => {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT {COLS} FROM articles WHERE saved = 1 ORDER BY published DESC"
-                ))?;
-                let mut it = stmt.query([])?;
-                while let Some(r) = it.next()? {
-                    push(r)?;
-                }
-            }
-        }
-        Ok(rows)
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Unread articles per category.
     pub fn unread_by_category(&self) -> Result<std::collections::HashMap<String, i64>> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         let mut stmt = conn.prepare(
             "SELECT category, count(*) FROM articles WHERE unread = 1 GROUP BY category",
         )?;
@@ -150,7 +127,7 @@ impl Store {
     }
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         Ok(match rows.next()? {
@@ -160,7 +137,7 @@ impl Store {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -170,7 +147,7 @@ impl Store {
     }
 
     pub fn unread_count(&self) -> Result<i64> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         Ok(
             conn.query_row("SELECT count(*) FROM articles WHERE unread = 1", [], |r| {
                 r.get(0)
@@ -179,7 +156,7 @@ impl Store {
     }
 
     pub fn mark_read(&self, link: &str) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE articles SET unread = 0 WHERE link = ?1",
             params![link],
@@ -188,7 +165,7 @@ impl Store {
     }
 
     pub fn set_unread(&self, link: &str, unread: bool) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE articles SET unread = ?1 WHERE link = ?2",
             params![unread as i64, link],
@@ -197,8 +174,7 @@ impl Store {
     }
 
     pub fn mark_read_many(&self, links: &[String]) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare("UPDATE articles SET unread = 0 WHERE link = ?1")?;
             for link in links {
@@ -210,7 +186,7 @@ impl Store {
     }
 
     pub fn set_saved(&self, link: &str, saved: bool) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE articles SET saved = ?1 WHERE link = ?2",
             params![saved as i64, link],
@@ -219,7 +195,7 @@ impl Store {
     }
 
     pub fn set_scroll(&self, link: &str, pos: u16) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE articles SET scroll_pos = ?1 WHERE link = ?2",
             params![pos, link],
@@ -228,7 +204,7 @@ impl Store {
     }
 
     pub fn cache_content(&self, link: &str, content: &str) -> Result<()> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         conn.execute(
             "UPDATE articles SET content_text = ?1 WHERE link = ?2",
             params![content, link],
@@ -237,8 +213,7 @@ impl Store {
     }
 
     pub fn upsert_batch(&self, articles: &[NewArticle]) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = self.conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO articles (category, source, summary, title, link, published, unread)
@@ -268,26 +243,21 @@ impl Store {
     /// Deletes articles published before `cutoff` (unix epoch seconds) —
     /// saved articles are always kept, regardless of age.
     pub fn prune_old(&self, cutoff: i64) -> Result<usize> {
-        let conn = self.conn()?;
+        let conn = &self.conn;
         Ok(conn.execute(
             "DELETE FROM articles WHERE published < ?1 AND saved = 0",
             params![cutoff],
         )?)
     }
+}
 
-    /// Copies the DB file to a sibling `.bak` (overwriting any previous
-    /// one) — a rolling one-generation safety net, meant to be called right
-    /// before `init_schema` runs on startup so a future migration bug can't
-    /// silently lose saved articles: restore with `cp dnews.db.bak
-    /// dnews.db`. A no-op if there's nothing to back up yet (first run).
-    pub fn backup(&self) -> Result<()> {
-        if !self.path.exists() {
-            return Ok(());
-        }
-        let backup_path = self.path.with_extension("db.bak");
-        std::fs::copy(&self.path, &backup_path)?;
-        Ok(())
+/// Copies the DB to `dnews.db.bak` before a schema migration runs, so a
+/// migration bug can't lose saved articles. Nothing to do on the first run.
+pub fn backup(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::copy(path, path.with_extension("db.bak"))?;
     }
+    Ok(())
 }
 
 /// A fresh DB path per call. The counter matters: the clock alone can repeat
@@ -376,7 +346,7 @@ mod tests {
             .set_saved("https://example.com/keep-me", true)
             .unwrap();
 
-        store.backup().unwrap();
+        backup(store.path()).unwrap();
 
         let backup_path = store.path().with_extension("db.bak");
         assert!(backup_path.exists(), "backup file was not created");
@@ -398,16 +368,14 @@ mod tests {
     #[test]
     fn backup_is_a_no_op_when_theres_no_db_file_yet() {
         let path = crate::store::temp_db_path("dnews_store_test_nofile");
-        let store = Store::open(&path).unwrap();
-        // Deliberately not calling init_schema(): the file doesn't exist yet.
-        store.backup().unwrap();
+        backup(&path).unwrap();
         assert!(!path.with_extension("db.bak").exists());
     }
     #[test]
     fn init_schema_upgrades_a_db_from_before_source_and_summary() {
         let store = test_store();
         // Recreate the original table layout, with one existing row.
-        let conn = store.conn().unwrap();
+        let conn = &store.conn;
         conn.execute_batch(
             "DROP TABLE articles;
              CREATE TABLE articles (

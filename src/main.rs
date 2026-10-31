@@ -55,13 +55,9 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // A failed backup must not block startup.
+    let _ = store::backup(&db_path);
     let db = store::Store::open(&db_path)?;
-    // Best-effort rolling backup before touching the schema — updating the
-    // binary itself already can't lose the DB (it lives outside the repo/
-    // binary entirely), but a future migration bug in init_schema() could;
-    // this keeps a one-generation-back copy of saved articles recoverable
-    // via `cp dnews.db.bak dnews.db`. A failed backup must not block startup.
-    let _ = db.backup();
     db.init_schema()?;
 
     let mut app = App::new(db, feeds);
