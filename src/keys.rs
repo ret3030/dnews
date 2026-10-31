@@ -37,6 +37,11 @@ pub fn handle(
         return Ok(());
     }
 
+    let reading = app.screen == Screen::Reader || (wide && app.panel_focused);
+    if reading && handle_reading(app, key) {
+        return Ok(());
+    }
+
     match app.screen {
         Screen::List => handle_list(app, key, progress_tx, reader_tx, wide)?,
         Screen::Reader => handle_reader(app, key, reader_tx),
@@ -54,6 +59,30 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('o') => app.open_in_browser(),
         KeyCode::Char('y') => app.copy_link(),
         KeyCode::Char('m') => app.toggle_read_current(),
+        _ => return false,
+    }
+    true
+}
+
+/// Article-only keys shared by the full-screen reader and the focused panel:
+/// picking a link by number and the text width toggle.
+fn handle_reading(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(c @ '0'..='9') if app.link_input.len() < 4 => {
+            if !(c == '0' && app.link_input.is_empty()) {
+                app.link_input.push(c);
+            }
+        }
+        KeyCode::Enter if !app.link_input.is_empty() => {
+            let n = app.link_input.parse().unwrap_or(0);
+            app.link_input.clear();
+            app.open_link(n);
+        }
+        KeyCode::Backspace if !app.link_input.is_empty() => {
+            app.link_input.pop();
+        }
+        KeyCode::Esc if !app.link_input.is_empty() => app.link_input.clear(),
+        KeyCode::Char('w') => app.toggle_reader_wide(),
         _ => return false,
     }
     true
@@ -229,7 +258,8 @@ fn scroll_article(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => cur.saturating_sub(1),
         KeyCode::Char('g') => 0,
         KeyCode::Char('G') => max,
-        KeyCode::PageDown | KeyCode::Char('d') => cur.saturating_add(15),
+        KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => cur.saturating_sub(15),
+        KeyCode::PageDown | KeyCode::Char('d' | ' ') => cur.saturating_add(15),
         KeyCode::PageUp | KeyCode::Char('u') => cur.saturating_sub(15),
         _ => return,
     };
@@ -244,14 +274,7 @@ mod tests {
     use crate::store::{NewArticle, Store};
 
     fn test_app() -> App {
-        let path = std::env::temp_dir().join(format!(
-            "dnews_keys_test_{}_{}.db",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = crate::store::temp_db_path("dnews_keys_test");
         let db = Store::open(&path).unwrap();
         db.init_schema().unwrap();
         // Two articles, newest first (ORDER BY published DESC), so list
@@ -747,7 +770,8 @@ mod tests {
         .unwrap();
         assert_eq!(app.overlay, Overlay::None);
 
-        app.record_feed_error("FRED Blog".into(), "HTTP status server error (504)".into());
+        app.feed_errors
+            .push(("FRED Blog".into(), "HTTP status server error (504)".into()));
         handle(
             &mut app,
             key(KeyCode::Char('!')),
@@ -789,5 +813,138 @@ mod tests {
             app.articles[0].unread,
             "m inside search must not mark anything"
         );
+    }
+    #[tokio::test]
+    async fn digits_then_enter_pick_a_link_and_esc_cancels() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        app.reader = Some(crate::reader::ReaderContent::from_plain("body"));
+
+        for c in ['1', '2'] {
+            handle(
+                &mut app,
+                key(KeyCode::Char(c)),
+                &progress_tx,
+                &reader_tx,
+                false,
+            )
+            .unwrap();
+        }
+        assert_eq!(app.link_input, "12");
+        handle(&mut app, key(KeyCode::Esc), &progress_tx, &reader_tx, false).unwrap();
+        assert!(app.link_input.is_empty());
+        assert_eq!(
+            app.screen,
+            Screen::Reader,
+            "Esc only cancels the link prompt"
+        );
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('3')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(app.link_input.is_empty());
+        // The fixture has no links, so nothing is opened.
+        assert_eq!(app.notice.as_deref(), Some("No link 3"));
+    }
+
+    #[tokio::test]
+    async fn space_pages_and_w_toggles_wide_text_persistently() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        app.reader_max_scroll.set(100);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char(' ')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.reader_scroll, 15);
+        let shift_space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT);
+        handle(&mut app, shift_space, &progress_tx, &reader_tx, false).unwrap();
+        assert_eq!(app.reader_scroll, 0);
+
+        assert!(!app.reader_wide);
+        handle(
+            &mut app,
+            key(KeyCode::Char('w')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(app.reader_wide);
+        assert_eq!(app.db.setting("reader_wide").unwrap().as_deref(), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn reopening_an_article_continues_where_it_was_left() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        app.reader_max_scroll.set(100);
+        app.reader_scroll = 42;
+        handle(
+            &mut app,
+            key(KeyCode::Char('q')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.screen, Screen::List);
+
+        // Survives a reload from the DB too.
+        app.reload_view().unwrap();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.reader_scroll, 42);
     }
 }

@@ -221,8 +221,9 @@ fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'stat
     if compact {
         // Fixed-width meta column so every title ends at the same place:
         // "  ● Title ……………   BBC World          3h ago"
-        let source = pad_to(&super::truncate(&source, COMPACT_SOURCE_W), COMPACT_SOURCE_W);
-        let meta = format!("  {source} {ago:>7}");
+        let source = super::truncate(&source, COMPACT_SOURCE_W);
+        let pad = " ".repeat(COMPACT_SOURCE_W.saturating_sub(source.width()));
+        let meta = format!("  {source}{pad} {ago:>7}");
         let title_w = width.saturating_sub(TITLE_INDENT + star_w + meta.width());
         let title = super::truncate(&row.title, title_w);
         let pad = title_w.saturating_sub(title.width());
@@ -259,11 +260,6 @@ fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'stat
     ]));
     lines.push(Line::raw(""));
     ListItem::new(Text::from(lines))
-}
-
-/// Pads `s` with spaces to `width` display columns.
-fn pad_to(s: &str, width: usize) -> String {
-    format!("{s}{}", " ".repeat(width.saturating_sub(s.width())))
 }
 
 fn separator_item(label: &str, width: usize) -> ListItem<'static> {

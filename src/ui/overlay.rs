@@ -30,9 +30,11 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Article",
         &[
             ("j / k", "scroll"),
-            ("d / u", "page down / up"),
+            ("d / u, Space", "page down / up"),
             ("g / G", "top / end"),
             ("J / K", "next / previous article"),
+            ("1 2 … Enter", "open link [n]"),
+            ("w", "wide / narrow text"),
             ("q / Esc", "back to list"),
         ],
     ),

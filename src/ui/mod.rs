@@ -1,4 +1,5 @@
 pub mod article;
+pub mod document;
 pub mod list;
 pub mod overlay;
 pub mod theme;
@@ -435,9 +436,9 @@ mod tests {
         let mut app = App::new(db, vec![]);
         app.reload_view().unwrap();
         app.screen = crate::app::Screen::Reader;
-        app.reader = Some(crate::reader::ReaderContent {
-            text: "Hello world, this is the article body.".into(),
-        });
+        app.reader = Some(crate::reader::ReaderContent::from_plain(
+            "Hello world, this is the article body.",
+        ));
 
         // A very wide terminal: the reader column must not span edge to edge.
         let out = dump(200, 30, &app);
@@ -473,9 +474,9 @@ mod tests {
         // Simulate the debounced preview already having loaded, as it would
         // shortly after the selection settles.
         app.reader_article = app.articles.first().cloned();
-        app.reader = Some(crate::reader::ReaderContent {
-            text: "Previewed article body text.".into(),
-        });
+        app.reader = Some(crate::reader::ReaderContent::from_plain(
+            "Previewed article body text.",
+        ));
 
         let wide = dump(super::SPLIT_MIN_WIDTH + 20, 30, &app);
         assert!(
@@ -520,9 +521,10 @@ mod tests {
         app.screen = crate::app::Screen::Reader;
         app.reader_article = app.articles.first().cloned();
         let text: Vec<String> = (1..=100).map(|i| format!("line {i:03}")).collect();
-        app.reader = Some(crate::reader::ReaderContent {
-            text: text.join("\n"),
-        });
+        app.reader = Some(crate::reader::ReaderContent::from_plain(&text.join(
+            "
+",
+        )));
 
         dump(100, 30, &app);
         let max = app.reader_max_scroll.get();

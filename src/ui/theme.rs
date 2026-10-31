@@ -17,6 +17,7 @@ pub const ACCENT: Color = Color::Rgb(0xfa, 0xb3, 0x87); // peach
 pub const YELLOW: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
 pub const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
 pub const MAUVE: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+pub const LINK: Color = Color::Rgb(0x89, 0xdc, 0xeb); // sky
 
 const SOURCE_PALETTE: [Color; 8] = [
     Color::Rgb(0xa6, 0xe3, 0xa1), // green

@@ -10,6 +10,7 @@ use crate::reader::{self, ReaderContent};
 use crate::store::{ArticleRow, ListFilter, Store};
 
 const COMPACT_KEY: &str = "compact";
+const READER_WIDE_KEY: &str = "reader_wide";
 
 /// Unsaved articles older than this get deleted by `prune_old_articles`.
 const PRUNE_AFTER_SECS: i64 = 60 * 24 * 60 * 60;
@@ -69,6 +70,10 @@ pub struct App {
     pub reader_max_scroll: Cell<u16>,
     pub reader_loading: bool,
     pub reader_error: Option<String>,
+    /// Wide text column in the reader. Persisted in the DB.
+    pub reader_wide: bool,
+    /// Digits typed in the reader to pick a link (`12` then Enter).
+    pub link_input: String,
 
     pub unread_count: i64,
     /// Unread articles per category, for the tab labels.
@@ -111,7 +116,9 @@ impl App {
                 categories.push(f.category.clone());
             }
         }
-        let compact = db.setting(COMPACT_KEY).ok().flatten().as_deref() == Some("1");
+        let flag = |key| db.setting(key).ok().flatten().as_deref() == Some("1");
+        let compact = flag(COMPACT_KEY);
+        let reader_wide = flag(READER_WIDE_KEY);
 
         Self {
             db,
@@ -130,6 +137,8 @@ impl App {
             reader_max_scroll: Cell::new(u16::MAX),
             reader_loading: false,
             reader_error: None,
+            reader_wide,
+            link_input: String::new(),
             unread_count: 0,
             tab_unread: HashMap::new(),
             compact,
@@ -182,6 +191,46 @@ impl App {
         if let Ok(by_category) = self.db.unread_by_category() {
             self.tab_unread = by_category;
         }
+    }
+
+    pub fn toggle_reader_wide(&mut self) {
+        self.reader_wide = !self.reader_wide;
+        let _ = self
+            .db
+            .set_setting(READER_WIDE_KEY, if self.reader_wide { "1" } else { "0" });
+    }
+
+    /// Remembers how far the open article was read, so reopening it
+    /// continues there.
+    fn save_scroll(&mut self) {
+        let Some(article) = self.reader_article.as_ref() else {
+            return;
+        };
+        let pos = self.reader_scroll.min(self.reader_max_scroll.get());
+        if pos == article.scroll_pos {
+            return;
+        }
+        let _ = self.db.set_scroll(&article.link, pos);
+        let link = article.link.clone();
+        if let Some(row) = self.articles.iter_mut().find(|a| a.link == link) {
+            row.scroll_pos = pos;
+        }
+    }
+
+    /// Opens link `n` (1-based) of the article in the browser.
+    pub fn open_link(&mut self, n: usize) {
+        let url = self
+            .reader
+            .as_ref()
+            .and_then(|c| c.links.get(n.wrapping_sub(1)))
+            .cloned();
+        self.notice = Some(match url {
+            None => format!("No link {n}"),
+            Some(url) => match crate::platform::open_url(&url) {
+                Ok(()) => format!("Opened link {n}"),
+                Err(e) => format!("Could not open browser: {e}"),
+            },
+        });
     }
 
     pub fn toggle_compact(&mut self) {
@@ -346,12 +395,19 @@ impl App {
             self.refresh_counts();
         }
 
-        self.reader_scroll = 0;
+        self.save_scroll();
+        self.reader_scroll = row.scroll_pos;
+        self.reader_max_scroll.set(u16::MAX);
         self.reader_error = None;
+        self.link_input.clear();
         self.reader_article = Some(row.clone());
 
-        if let Some(cached) = row.content_text.clone() {
-            self.reader = Some(ReaderContent { text: cached });
+        if let Some(cached) = row
+            .content_text
+            .as_deref()
+            .and_then(ReaderContent::from_cache)
+        {
+            self.reader = Some(cached);
             self.reader_loading = false;
             return;
         }
@@ -367,7 +423,7 @@ impl App {
             match reader::fetch_article(&link).await {
                 Ok(content) => {
                     if let Ok(store) = Store::open(&db_path) {
-                        let _ = store.cache_content(&link, &content.text);
+                        let _ = store.cache_content(&link, &content.to_cache());
                     }
                     let _ = tx.send(ReaderEvent::Loaded(link, content));
                 }
@@ -379,6 +435,7 @@ impl App {
     }
 
     pub fn close_reader(&mut self) {
+        self.save_scroll();
         self.screen = Screen::List;
         self.reader = None;
         self.reader_article = None;
@@ -393,6 +450,7 @@ impl App {
     /// last-read article lingering — the panel only lights back up through
     /// an explicit `Enter` or the Shift+J/K live preview.
     pub fn unfocus_panel(&mut self) {
+        self.save_scroll();
         self.panel_focused = false;
         self.reader = None;
         self.reader_article = None;
@@ -483,11 +541,6 @@ impl App {
         });
     }
 
-    /// Records a failed feed; the footer summarises them once the reload ends.
-    pub fn record_feed_error(&mut self, name: String, err: String) {
-        self.feed_errors.push((name, err));
-    }
-
     /// Called when a reload finishes: turns collected errors into a summary.
     pub fn finish_reload(&mut self) -> Result<()> {
         self.loading = false;
@@ -528,14 +581,7 @@ mod tests {
     use crate::feed::Feed;
 
     fn test_app() -> App {
-        let path = std::env::temp_dir().join(format!(
-            "dnews_app_test_{}_{}.db",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = crate::store::temp_db_path("dnews_app_test");
         let db = Store::open(&path).unwrap();
         db.init_schema().unwrap();
         App::new(db, Vec::<Feed>::new())
@@ -570,23 +616,19 @@ mod tests {
         // B's fetch finishes first.
         app.apply_reader_event(ReaderEvent::Loaded(
             "https://example.com/b".into(),
-            ReaderContent {
-                text: "B's content".into(),
-            },
+            ReaderContent::from_plain("B's content"),
         ));
-        assert_eq!(app.reader.as_ref().unwrap().text, "B's content");
+        assert_eq!(app.reader.as_ref().unwrap().plain_text(), "B's content");
         assert!(!app.reader_loading);
 
         // A's fetch finally completes — it must NOT overwrite B's content,
         // since the user is no longer looking at article A.
         app.apply_reader_event(ReaderEvent::Loaded(
             "https://example.com/a".into(),
-            ReaderContent {
-                text: "A's content".into(),
-            },
+            ReaderContent::from_plain("A's content"),
         ));
         assert_eq!(
-            app.reader.as_ref().unwrap().text,
+            app.reader.as_ref().unwrap().plain_text(),
             "B's content",
             "a late response for a since-abandoned article overwrote the current one"
         );
@@ -600,12 +642,10 @@ mod tests {
 
         app.apply_reader_event(ReaderEvent::Loaded(
             "https://example.com/a".into(),
-            ReaderContent {
-                text: "hello".into(),
-            },
+            ReaderContent::from_plain("hello"),
         ));
 
-        assert_eq!(app.reader.as_ref().unwrap().text, "hello");
+        assert_eq!(app.reader.as_ref().unwrap().plain_text(), "hello");
         assert!(!app.reader_loading);
     }
 
@@ -641,8 +681,8 @@ mod tests {
         app.finish_reload().unwrap();
         assert!(app.status.is_empty());
 
-        app.record_feed_error("B feed".into(), "timeout".into());
-        app.record_feed_error("A feed".into(), "HTTP 504".into());
+        app.feed_errors.push(("B feed".into(), "timeout".into()));
+        app.feed_errors.push(("A feed".into(), "HTTP 504".into()));
         app.finish_reload().unwrap();
         assert_eq!(app.status, "2 feeds failed, press ! for details");
         assert_eq!(app.feed_errors[0].0, "A feed", "errors are listed sorted");

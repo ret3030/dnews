@@ -117,7 +117,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::
                         app.done_feeds += 1;
                     }
                     Some(FetchEvent::Complete) => app.finish_reload()?,
-                    Some(FetchEvent::Error(name, err)) => app.record_feed_error(name, err),
+                    Some(FetchEvent::Error(name, err)) => app.feed_errors.push((name, err)),
                     None => {}
                 }
             }

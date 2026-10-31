@@ -616,6 +616,8 @@ dependencies = [
  "roxmltree",
  "rusqlite",
  "scraper",
+ "serde",
+ "serde_json",
  "tokio",
  "unicode-width",
 ]

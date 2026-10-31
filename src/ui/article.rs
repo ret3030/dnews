@@ -3,25 +3,34 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
-use super::theme;
+use super::{document, theme};
 use crate::app::App;
 
-const READ_WIDTH: u16 = 88;
+/// Text column width: comfortable for reading by default, wider with `w`.
+const TEXT_WIDTH: u16 = 76;
+const TEXT_WIDTH_WIDE: u16 = 100;
+/// Left padding plus a gap and the scrollbar on the right.
+const SIDE_COLUMNS: u16 = 5;
 
-/// Renders the article view. `panel` distinguishes the full-screen reader
-/// (narrow terminals, opened via `Enter`, `q`/`Esc` to leave) from the wide
-/// split layout's side panel (see `ui::SPLIT_MIN_WIDTH`) — same content and
-/// scrolling, but the panel's footer hint further depends on
-/// `App::panel_focused` (see `render_footer`).
+/// Renders the article: full screen on narrow terminals, or as the side
+/// panel of the wide split layout (`panel`).
 pub fn draw(f: &mut Frame, app: &App, area: Rect, panel: bool) {
-    let area = super::centered(area, READ_WIDTH);
+    let text_width = if app.reader_wide {
+        TEXT_WIDTH_WIDE
+    } else {
+        TEXT_WIDTH
+    };
+    let area = super::centered(area, text_width + SIDE_COLUMNS);
+    let header_lines = header_height(app, area.width);
     let footer_lines = footer_hint_lines(app, panel, area.width).max(1);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(header_lines),
             Constraint::Min(0),
             Constraint::Length(footer_lines),
         ])
@@ -32,25 +41,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, panel: bool) {
     render_footer(f, app, chunks[2], panel);
 }
 
-fn render_header(f: &mut Frame, app: &App, area: Rect) {
-    let row = app.reader_article.as_ref();
-    let (title, domain, date, saved) = match row {
-        Some(r) => {
-            let domain = if r.source.is_empty() {
-                super::domain(&r.link)
-            } else {
-                r.source.clone()
-            };
-            let date = chrono::Local
-                .timestamp_opt(r.published, 0)
-                .single()
-                .map(|d| d.format("%a %d %b %Y  ·  %H:%M").to_string())
-                .unwrap_or_default();
-            (r.title.clone(), domain, date, r.saved)
-        }
-        None => (String::new(), String::new(), String::new(), false),
-    };
+const MAX_TITLE_LINES: usize = 3;
 
+fn title_lines(app: &App, width: u16) -> Vec<String> {
+    let title = app
+        .reader_article
+        .as_ref()
+        .map(|a| a.title.as_str())
+        .unwrap_or_default();
+    super::wrap_words(title, width.saturating_sub(4) as usize, MAX_TITLE_LINES)
+}
+
+/// Title lines + meta line + bottom rule.
+fn header_height(app: &App, width: u16) -> u16 {
+    title_lines(app, width).len() as u16 + 2
+}
+
+fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_type(BorderType::Plain)
@@ -58,118 +65,132 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mut title_spans = vec![Span::styled(
-        title,
-        Style::default()
-            .fg(theme::FG_BRIGHT)
-            .add_modifier(Modifier::BOLD),
-    )];
-    if saved {
-        title_spans.push(Span::styled(
+    let Some(article) = app.reader_article.as_ref() else {
+        return;
+    };
+    let source = if article.source.is_empty() {
+        super::domain(&article.link)
+    } else {
+        article.source.clone()
+    };
+    let mut meta = vec![source];
+    if let Some(date) = chrono::Local.timestamp_opt(article.published, 0).single() {
+        meta.insert(0, date.format("%a %-d %b %Y, %H:%M").to_string());
+    }
+    if let Some(content) = app.reader.as_ref().filter(|_| !app.reader_loading) {
+        meta.push(format!("{} min read", content.reading_minutes()));
+    }
+
+    let title_style = Style::default()
+        .fg(theme::FG_BRIGHT)
+        .add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line> = title_lines(app, area.width)
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, title_style)))
+        .collect();
+    if article.saved
+        && let Some(last) = lines.last_mut()
+    {
+        last.push_span(Span::styled(
             " \u{f005}",
             Style::default().fg(theme::YELLOW),
         ));
     }
-
-    let header = Paragraph::new(vec![
-        Line::from(title_spans),
-        Line::from(Span::styled(
-            format!("{date}  ·  {domain}"),
-            Style::default().fg(theme::GRAY),
-        )),
-    ])
-    .alignment(Alignment::Center)
-    .wrap(Wrap { trim: true });
-    f.render_widget(header, inner);
+    lines.push(Line::styled(
+        meta.join("  ·  "),
+        Style::default().fg(theme::GRAY),
+    ));
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
 }
 
 fn render_body(f: &mut Frame, app: &App, area: Rect) {
-    let inner = Layout::default()
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
-        .split(area)[1];
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    let (text_area, bar_area) = (cols[1], cols[3]);
+    let width = text_area.width as usize;
 
-    let body = if app.reader_article.is_none() {
-        Paragraph::new(Line::from(Span::styled(
-            "Select an article",
-            Style::default().fg(theme::DIM),
-        )))
-        .alignment(Alignment::Center)
+    let lines: Vec<Line> = if app.reader_article.is_none() {
+        vec![Line::styled("Select an article", Style::default().fg(theme::DIM)).centered()]
     } else if app.reader_loading {
-        Paragraph::new(Line::from(Span::styled(
-            format!("{} Loading article...", super::spinner(app.spin_frame)),
-            Style::default().fg(theme::GRAY),
-        )))
-        .alignment(Alignment::Center)
-    } else if let Some(err) = &app.reader_error {
-        // Fall back to the feed's own summary so there's still something to
-        // read; `o` opens the full article in the browser.
-        let mut lines = vec![
+        vec![
             Line::styled(
-                format!("Could not load the full article: {err}"),
-                Style::default().fg(theme::RED),
-            ),
-            Line::styled(
-                "Press o to open it in the browser.",
+                format!("{} Loading article...", super::spinner(app.spin_frame)),
                 Style::default().fg(theme::GRAY),
-            ),
-        ];
-        let summary = app
-            .reader_article
-            .as_ref()
-            .map(|a| a.summary.as_str())
-            .unwrap_or_default();
-        if !summary.is_empty() {
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                summary.to_string(),
-                Style::default().fg(theme::FG),
-            ));
-        }
-        Paragraph::new(lines).wrap(Wrap { trim: true })
+            )
+            .centered(),
+        ]
+    } else if let Some(err) = &app.reader_error {
+        error_lines(app, err, width)
     } else if let Some(content) = &app.reader {
-        Paragraph::new(
-            content
-                .text
-                .lines()
-                .map(|l| {
-                    let trimmed = l.trim_start();
-                    if trimmed.starts_with("[image:") {
-                        Line::from(Span::styled(
-                            l.to_string(),
-                            Style::default()
-                                .fg(theme::MAUVE)
-                                .add_modifier(Modifier::ITALIC),
-                        ))
-                    } else {
-                        Line::from(Span::styled(l.to_string(), Style::default().fg(theme::FG)))
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-        .wrap(Wrap { trim: false })
+        document::render(content, width)
     } else {
-        Paragraph::new("")
+        Vec::new()
     };
 
-    // Remember how far the body can scroll at this width/height, so the
-    // scroll keys can stop at the last line (see `App::reader_max_scroll`).
-    // Also clamp what we draw, in case the terminal grew since the last key.
-    let lines = body.line_count(inner.width);
-    let max = u16::try_from(lines)
+    // Remember how far the body can scroll, so the scroll keys stop at the
+    // last line (see `App::reader_max_scroll`). Also clamp what is drawn, in
+    // case the terminal grew since the last key press.
+    let max = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
-        .saturating_sub(inner.height);
+        .saturating_sub(text_area.height);
     app.reader_max_scroll.set(max);
-    let body = body.scroll((app.reader_scroll.min(max), 0));
-    f.render_widget(body, inner);
+    let scroll = app.reader_scroll.min(max);
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), text_area);
+
+    if max > 0 {
+        let mut state = ScrollbarState::new(max as usize).position(scroll as usize);
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .track_style(Style::default().fg(theme::BORDER))
+            .thumb_symbol("┃")
+            .thumb_style(Style::default().fg(theme::GRAY));
+        f.render_stateful_widget(bar, bar_area, &mut state);
+    }
 }
 
-/// The footer hint, as atomic phrases — used both to render it and, via
-/// `footer_hint_lines`, to size the footer row so a narrow terminal wraps
-/// onto a second line instead of clipping.
+/// When the full article can't be fetched, show why plus the feed's own
+/// summary, so there is still something to read.
+fn error_lines(app: &App, err: &str, width: usize) -> Vec<Line<'static>> {
+    let mut lines = document::wrap(
+        vec![(
+            format!("Could not load the full article: {err}"),
+            Style::default().fg(theme::RED),
+        )],
+        width,
+        vec![],
+        vec![],
+    );
+    lines.push(Line::styled(
+        "Press o to open it in the browser.",
+        Style::default().fg(theme::GRAY),
+    ));
+    let summary = app
+        .reader_article
+        .as_ref()
+        .map(|a| a.summary.clone())
+        .unwrap_or_default();
+    if !summary.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(document::wrap(
+            vec![(summary, Style::default().fg(theme::FG))],
+            width,
+            vec![],
+            vec![],
+        ));
+    }
+    lines
+}
+
 fn footer_hints(app: &App, panel: bool) -> &'static [&'static str] {
-    // The split-layout panel's hint depends on whether it currently owns
-    // plain-vim-key input (see `App::panel_focused` / `keys::handle_list_wide`).
     if !panel {
         &[
             "j/k scroll",
@@ -185,40 +206,62 @@ fn footer_hints(app: &App, panel: bool) -> &'static [&'static str] {
     }
 }
 
+/// How far through the article the view is, e.g. "42%".
+fn progress(app: &App) -> Option<String> {
+    let max = app.reader_max_scroll.get();
+    if app.reader.is_none() || max == 0 || max == u16::MAX {
+        return None;
+    }
+    let pos = app.reader_scroll.min(max) as usize;
+    Some(format!("{}%", pos * 100 / max as usize))
+}
+
 fn footer_hint_lines(app: &App, panel: bool, width: u16) -> u16 {
-    if app.notice.is_some() && reader_has_focus(app, panel) {
+    if reader_has_focus(app, panel) && (app.notice.is_some() || !app.link_input.is_empty()) {
         return 1;
     }
-    let usable = width.saturating_sub(1) as usize;
+    let usable = width.saturating_sub(6) as usize;
     super::wrap_hints(footer_hints(app, panel), "   ", usable).len() as u16
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
     let width = area.width.saturating_sub(1) as usize;
-    let style = if app.reader_loading {
-        Style::default().fg(theme::DIM)
-    } else {
-        Style::default().fg(theme::GRAY)
-    };
-    if let Some(notice) = app.notice.as_ref().filter(|_| reader_has_focus(app, panel)) {
-        let line = Line::styled(
+    let focus = reader_has_focus(app, panel);
+    let accent = Style::default().fg(theme::ACCENT);
+
+    let mut lines: Vec<Line> = if focus && !app.link_input.is_empty() {
+        vec![Line::styled(
+            format!(" Open link {}: Enter   Esc cancel", app.link_input),
+            accent,
+        )]
+    } else if let Some(notice) = app.notice.as_ref().filter(|_| focus) {
+        vec![Line::styled(
             format!(" {}", super::truncate(notice, width.saturating_sub(1))),
-            Style::default().fg(theme::ACCENT),
-        );
-        f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
-            area,
-        );
-        return;
-    }
-    let lines: Vec<Line> = super::wrap_hints(footer_hints(app, panel), "   ", width)
-        .into_iter()
-        .map(|l| Line::from(Span::styled(format!(" {l}"), style)))
-        .collect();
+            accent,
+        )]
+    } else {
+        let style = Style::default().fg(if app.reader_loading {
+            theme::DIM
+        } else {
+            theme::GRAY
+        });
+        super::wrap_hints(footer_hints(app, panel), "   ", width.saturating_sub(5))
+            .into_iter()
+            .map(|l| Line::styled(format!(" {l}"), style))
+            .collect()
+    };
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::PANEL)),
+        Paragraph::new(std::mem::take(&mut lines))
+            .style(Style::default().bg(theme::PANEL))
+            .wrap(Wrap { trim: false }),
         area,
     );
+
+    if let Some(pct) = progress(app) {
+        let pct = Line::styled(format!("{pct} "), Style::default().fg(theme::GRAY)).right_aligned();
+        let first_row = Rect { height: 1, ..area };
+        f.render_widget(Paragraph::new(pct), first_row);
+    }
 }
 
 /// Whether keys currently go to the article (so its footer shows notices).

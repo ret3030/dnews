@@ -18,6 +18,8 @@ pub struct ArticleRow {
     pub unread: bool,
     pub saved: bool,
     pub content_text: Option<String>,
+    /// Where the reader was left in this article.
+    pub scroll_pos: u16,
 }
 
 #[derive(Default)]
@@ -75,6 +77,7 @@ impl Store {
             "saved INTEGER NOT NULL DEFAULT 0",
             "source TEXT NOT NULL DEFAULT ''",
             "summary TEXT NOT NULL DEFAULT ''",
+            "scroll_pos INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE articles ADD COLUMN {column}"), []);
         }
@@ -97,11 +100,13 @@ impl Store {
                 content_text: r.get(5)?,
                 source: r.get(6)?,
                 summary: r.get(7)?,
+                scroll_pos: r.get(8)?,
             });
             Ok(())
         };
 
-        const COLS: &str = "title, link, published, unread, saved, content_text, source, summary";
+        const COLS: &str =
+            "title, link, published, unread, saved, content_text, source, summary, scroll_pos";
         match filter {
             ListFilter::All => {
                 let mut stmt = conn.prepare(&format!(
@@ -213,6 +218,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_scroll(&self, link: &str, pos: u16) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE articles SET scroll_pos = ?1 WHERE link = ?2",
+            params![pos, link],
+        )?;
+        Ok(())
+    }
+
     pub fn cache_content(&self, link: &str, content: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -276,19 +290,25 @@ impl Store {
     }
 }
 
+/// A fresh DB path per call. The counter matters: the clock alone can repeat
+/// between tests running in parallel (macOS has microsecond resolution).
+#[cfg(test)]
+pub fn temp_db_path(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "{tag}_{}_{}.db",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_store() -> Store {
-        let path = std::env::temp_dir().join(format!(
-            "dnews_store_test_{}_{}.db",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = crate::store::temp_db_path("dnews_store_test");
         let store = Store::open(&path).unwrap();
         store.init_schema().unwrap();
         store
@@ -377,14 +397,7 @@ mod tests {
 
     #[test]
     fn backup_is_a_no_op_when_theres_no_db_file_yet() {
-        let path = std::env::temp_dir().join(format!(
-            "dnews_store_test_nofile_{}_{}.db",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = crate::store::temp_db_path("dnews_store_test_nofile");
         let store = Store::open(&path).unwrap();
         // Deliberately not calling init_schema(): the file doesn't exist yet.
         store.backup().unwrap();
