@@ -25,9 +25,17 @@ pub fn parse(path: &Path) -> Result<Vec<Feed>> {
 
 fn walk(node: Node, category: &str, feeds: &mut Vec<Feed>) {
     if let Some(url) = node.attribute("xmlUrl") {
+        let name = node
+            .attribute("text")
+            .or_else(|| node.attribute("title"))
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::ui::domain(url));
         feeds.push(Feed {
             url: url.to_string(),
             category: category.to_string(),
+            name,
         });
         return;
     }

@@ -139,6 +139,28 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_unread(&self, link: &str, unread: bool) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE articles SET unread = ?1 WHERE link = ?2",
+            params![unread as i64, link],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_read_many(&self, links: &[String]) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE articles SET unread = 0 WHERE link = ?1")?;
+            for link in links {
+                stmt.execute(params![link])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_saved(&self, link: &str, saved: bool) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(

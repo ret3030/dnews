@@ -149,27 +149,23 @@ fn footer_hints(app: &App, panel: bool) -> &'static [&'static str] {
     // plain-vim-key input (see `App::panel_focused` / `keys::handle_list_wide`).
     if !panel {
         &[
-            "q/Esc back",
             "j/k scroll",
-            "g/G top/bottom",
-            "d/u page",
-            "s save",
-            "Shift+J/K next/prev article",
+            "J/K next/prev",
+            "o browser",
+            "q back",
+            "? help",
         ]
     } else if app.panel_focused {
-        &[
-            "q/Esc unfocus",
-            "j/k scroll",
-            "g/G top/bottom",
-            "d/u page",
-            "s save",
-        ]
+        &["j/k scroll", "o browser", "q back", "? help"]
     } else {
-        &["↵ focus to scroll", "Shift+J/K browse+preview"]
+        &["↵ read here", "J/K preview"]
     }
 }
 
 fn footer_hint_lines(app: &App, panel: bool, width: u16) -> u16 {
+    if app.notice.is_some() && reader_has_focus(app, panel) {
+        return 1;
+    }
     let usable = width.saturating_sub(1) as usize;
     super::wrap_hints(footer_hints(app, panel), "   ", usable).len() as u16
 }
@@ -181,6 +177,17 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
     } else {
         Style::default().fg(theme::GRAY)
     };
+    if let Some(notice) = app.notice.as_ref().filter(|_| reader_has_focus(app, panel)) {
+        let line = Line::styled(
+            format!(" {}", super::truncate(notice, width.saturating_sub(1))),
+            Style::default().fg(theme::ACCENT),
+        );
+        f.render_widget(
+            Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
+            area,
+        );
+        return;
+    }
     let lines: Vec<Line> = super::wrap_hints(footer_hints(app, panel), "   ", width)
         .into_iter()
         .map(|l| Line::from(Span::styled(format!(" {l}"), style)))
@@ -189,4 +196,9 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
         Paragraph::new(lines).style(Style::default().bg(theme::PANEL)),
         area,
     );
+}
+
+/// Whether keys currently go to the article (so its footer shows notices).
+fn reader_has_focus(app: &App, panel: bool) -> bool {
+    !panel || app.panel_focused
 }

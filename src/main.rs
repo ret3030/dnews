@@ -1,6 +1,7 @@
 mod app;
 mod feed;
 mod keys;
+mod platform;
 mod reader;
 mod store;
 mod ui;
@@ -115,14 +116,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::
                     Some(FetchEvent::FeedDone) => {
                         app.done_feeds += 1;
                     }
-                    Some(FetchEvent::Complete) => {
-                        app.loading = false;
-                        app.prune_old_articles();
-                        app.reload_view()?;
-                    }
-                    Some(FetchEvent::Error(msg)) => {
-                        app.status = format!("⚠ {msg}");
-                    }
+                    Some(FetchEvent::Complete) => app.finish_reload()?,
+                    Some(FetchEvent::Error(name, err)) => app.record_feed_error(name, err),
                     None => {}
                 }
             }

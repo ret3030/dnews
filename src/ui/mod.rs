@@ -1,5 +1,6 @@
 pub mod article;
 pub mod list;
+pub mod overlay;
 pub mod theme;
 
 use ratatui::Frame;
@@ -7,6 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Screen};
 
@@ -53,6 +55,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         Screen::List => list::draw(f, app, inner, false),
     }
+
+    overlay::draw(f, app, area);
 }
 
 /// Horizontally centers a `max_width`-wide (or narrower, if the area is
@@ -90,15 +94,98 @@ pub fn time_ago(published: i64) -> String {
 /// ellipsis if it had to cut — keeps long error/status text from ever
 /// overflowing its bar.
 pub fn truncate(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
+    if s.width() <= max_width {
         return s.to_string();
     }
     if max_width <= 1 {
         return "…".to_string();
     }
-    let mut out: String = s.chars().take(max_width - 1).collect();
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max_width - 1 {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
     out.push('…');
     out
+}
+
+/// Word-wraps `s` to `width` display columns, keeping at most `max_lines`
+/// lines; if text is left over, the last line ends in an ellipsis. Words
+/// longer than a whole line are hard-split.
+pub fn wrap_words(s: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0;
+    let mut overflow = false;
+
+    'words: for word in s.split_whitespace() {
+        let mut word = word;
+        loop {
+            let ww = word.width();
+            let need = if cur.is_empty() { ww } else { cur_w + 1 + ww };
+            if need <= width {
+                if !cur.is_empty() {
+                    cur.push(' ');
+                    cur_w += 1;
+                }
+                cur.push_str(word);
+                cur_w += ww;
+                continue 'words;
+            }
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
+                cur_w = 0;
+                if lines.len() == max_lines {
+                    overflow = true;
+                    break 'words;
+                }
+                continue;
+            }
+            // A single word wider than the line: split it.
+            let mut head = String::new();
+            let mut hw = 0;
+            let mut split_at = word.len();
+            for (i, c) in word.char_indices() {
+                let w = c.width().unwrap_or(0);
+                if hw + w > width {
+                    split_at = i;
+                    break;
+                }
+                head.push(c);
+                hw += w;
+            }
+            lines.push(head);
+            word = &word[split_at..];
+            if lines.len() == max_lines {
+                overflow = !word.is_empty();
+                break 'words;
+            }
+            if word.is_empty() {
+                continue 'words;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        if lines.len() < max_lines {
+            lines.push(cur);
+        } else {
+            overflow = true;
+        }
+    }
+    if overflow && let Some(last) = lines.last_mut() {
+        // `truncate` keeps the ellipsis when the line is already full.
+        *last = truncate(&format!("{last}…"), width);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Like `truncate`, but operates on a styled `Line` (e.g. the tab bar) instead
@@ -301,10 +388,12 @@ mod tests {
             Feed {
                 url: "https://example.com/feed".into(),
                 category: "Tech & Dev".into(),
+                name: "Example".into(),
             },
             Feed {
                 url: "https://irozhlas.cz/feed".into(),
                 category: "Zprávy".into(),
+                name: "iRozhlas".into(),
             },
         ];
         let mut app = App::new(db, feeds);
@@ -457,6 +546,55 @@ mod tests {
             !out.contains("line 100"),
             "max scroll leaves blank space below the last line"
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn wrap_words_breaks_at_spaces_and_ellipsizes_the_overflow() {
+        use super::wrap_words;
+        assert_eq!(wrap_words("short title", 40, 2), vec!["short title"]);
+        assert_eq!(
+            wrap_words("one two three four five", 9, 2),
+            vec!["one two", "three…"]
+        );
+        // Every line fits, measured in display columns.
+        for line in wrap_words("Vláda schválila státní rozpočet na příští rok", 12, 3) {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 12,
+                "{line:?}"
+            );
+        }
+        // A word longer than the line is split rather than overflowing.
+        let long = wrap_words("supercalifragilistic", 8, 2);
+        assert_eq!(long[0], "supercal");
+        assert!(long[1].ends_with('…'));
+    }
+
+    #[test]
+    fn list_titles_keep_clear_of_the_right_edge() {
+        let path =
+            std::env::temp_dir().join(format!("dnews_ui_test_gutter_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Store::open(&path).unwrap();
+        db.init_schema().unwrap();
+        db.upsert_batch(&[NewArticle {
+            category: String::new(),
+            title: "Several EU countries on track to fail nature targets set for the end of the decade, report finds".into(),
+            link: "https://example.com/a".into(),
+            published: chrono::Utc::now().timestamp(),
+        }])
+        .unwrap();
+        let mut app = App::new(db, vec![]);
+        app.reload_view().unwrap();
+
+        let width = 60;
+        let out = dump(width, 20, &app);
+        // Rows 3.. are the list (row 0 border, 1 tabs, 2 unread counter).
+        for line in out.lines().skip(3).take(4) {
+            let tail: String = line.chars().skip(width as usize - 3).collect();
+            assert!(tail.trim().is_empty(), "text in the right gutter: {line:?}");
+        }
+        assert!(out.contains("decade") || out.contains('…'));
 
         let _ = std::fs::remove_file(&path);
     }

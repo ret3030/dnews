@@ -25,6 +25,14 @@ pub enum ReaderEvent {
     Failed(String, String),
 }
 
+/// A modal panel drawn over the current screen; any key closes it.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Overlay {
+    None,
+    Help,
+    FeedErrors,
+}
+
 pub struct App {
     pub db: Store,
     pub feeds: Vec<Feed>,
@@ -64,6 +72,12 @@ pub struct App {
     pub total_feeds: usize,
     pub done_feeds: usize,
     pub status: String,
+    /// Feeds that failed during the last reload: (feed name, error).
+    pub feed_errors: Vec<(String, String)>,
+    /// A one-off confirmation ("Link copied") shown in the footer until the
+    /// next key press.
+    pub notice: Option<String>,
+    pub overlay: Overlay,
     pub spin_frame: usize,
 
     /// In the wide split layout only: whether plain vim keys currently
@@ -113,6 +127,9 @@ impl App {
             total_feeds: 0,
             done_feeds: 0,
             status: String::new(),
+            feed_errors: Vec::new(),
+            notice: None,
+            overlay: Overlay::None,
             spin_frame: 0,
             panel_focused: false,
             preview_due_at: None,
@@ -126,6 +143,8 @@ impl App {
 
     pub fn start_reload(&mut self, tx: &mpsc::UnboundedSender<FetchEvent>) {
         self.loading = true;
+        self.status.clear();
+        self.feed_errors.clear();
         fetch::spawn_reload(self.feeds.clone(), self.db_path(), tx.clone());
     }
 
@@ -356,6 +375,106 @@ impl App {
         self.reader_scroll = 0;
     }
 
+    /// The article the next action applies to: the one open in the reader
+    /// (full screen or focused panel), otherwise the list selection.
+    pub fn current_article(&self) -> Option<&ArticleRow> {
+        if self.screen == Screen::Reader || self.panel_focused {
+            return self.reader_article.as_ref();
+        }
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.articles.get(i))
+    }
+
+    pub fn current_link(&self) -> Option<String> {
+        self.current_article().map(|a| a.link.clone())
+    }
+
+    /// Flips read/unread on the current article, in memory and in the DB.
+    pub fn toggle_read_current(&mut self) {
+        let Some(link) = self.current_link() else {
+            return;
+        };
+        let Some(row) = self.articles.iter_mut().find(|a| a.link == link) else {
+            return;
+        };
+        row.unread = !row.unread;
+        let unread = row.unread;
+        if let Some(open) = self.reader_article.as_mut().filter(|a| a.link == link) {
+            open.unread = unread;
+        }
+        let _ = self.db.set_unread(&link, unread);
+        self.unread_count = (self.unread_count + if unread { 1 } else { -1 }).max(0);
+        self.notice = Some(
+            if unread {
+                "Marked unread"
+            } else {
+                "Marked read"
+            }
+            .into(),
+        );
+    }
+
+    /// Marks every article currently listed (current tab and search) as read.
+    pub fn mark_all_read(&mut self) {
+        let links: Vec<String> = self
+            .filtered
+            .iter()
+            .filter_map(|&i| self.articles.get(i))
+            .filter(|a| a.unread)
+            .map(|a| a.link.clone())
+            .collect();
+        if links.is_empty() {
+            return;
+        }
+        let _ = self.db.mark_read_many(&links);
+        for &i in &self.filtered {
+            if let Some(a) = self.articles.get_mut(i) {
+                a.unread = false;
+            }
+        }
+        self.unread_count = self.db.unread_count().unwrap_or(0);
+        self.notice = Some(format!("Marked {} read", links.len()));
+    }
+
+    pub fn open_in_browser(&mut self) {
+        let Some(link) = self.current_link() else {
+            return;
+        };
+        self.notice = Some(match crate::platform::open_url(&link) {
+            Ok(()) => "Opened in browser".into(),
+            Err(e) => format!("Could not open browser: {e}"),
+        });
+    }
+
+    pub fn copy_link(&mut self) {
+        let Some(link) = self.current_link() else {
+            return;
+        };
+        self.notice = Some(match crate::platform::copy_to_clipboard(&link) {
+            Ok(()) => "Link copied".into(),
+            Err(e) => format!("Could not copy: {e}"),
+        });
+    }
+
+    /// Records a failed feed; the footer summarises them once the reload ends.
+    pub fn record_feed_error(&mut self, name: String, err: String) {
+        self.feed_errors.push((name, err));
+    }
+
+    /// Called when a reload finishes: turns collected errors into a summary.
+    pub fn finish_reload(&mut self) -> Result<()> {
+        self.loading = false;
+        self.feed_errors.sort();
+        self.status = match self.feed_errors.len() {
+            0 => String::new(),
+            1 => "1 feed failed, press ! for details".into(),
+            n => format!("{n} feeds failed, press ! for details"),
+        };
+        self.prune_old_articles();
+        self.reload_view()
+    }
+
     /// Applies a background reader fetch's result, but only if it's still
     /// for the article currently open — a fetch started for an article the
     /// user has since navigated away from can complete late, and without
@@ -488,5 +607,17 @@ mod tests {
             "https://example.com/old",
             "reload reindexing must not change which article the reader thinks is open"
         );
+    }
+    #[test]
+    fn finished_reload_summarises_failed_feeds() {
+        let mut app = test_app();
+        app.finish_reload().unwrap();
+        assert!(app.status.is_empty());
+
+        app.record_feed_error("B feed".into(), "timeout".into());
+        app.record_feed_error("A feed".into(), "HTTP 504".into());
+        app.finish_reload().unwrap();
+        assert_eq!(app.status, "2 feeds failed, press ! for details");
+        assert_eq!(app.feed_errors[0].0, "A feed", "errors are listed sorted");
     }
 }

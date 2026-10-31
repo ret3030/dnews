@@ -9,7 +9,8 @@ pub enum FetchEvent {
     Started(usize),
     FeedDone,
     Complete,
-    Error(String),
+    /// A feed failed to download or parse: (feed name, error message).
+    Error(String, String),
 }
 
 const MAX_CONCURRENT: usize = 16;
@@ -56,8 +57,8 @@ pub fn spawn_reload(
                         let _ = write_tx.send(articles);
                     }
                     Err(e) => {
-                        let domain = crate::ui::domain(&feed.url);
-                        let _ = progress_tx.send(FetchEvent::Error(format!("{domain}: {e}")));
+                        let _ =
+                            progress_tx.send(FetchEvent::Error(feed.name.clone(), e.to_string()));
                     }
                 }
                 let _ = progress_tx.send(FetchEvent::FeedDone);
@@ -75,7 +76,13 @@ pub fn spawn_reload(
 }
 
 async fn fetch_one(client: &reqwest::Client, feed: &Feed) -> anyhow::Result<Vec<NewArticle>> {
-    let bytes = client.get(&feed.url).send().await?.bytes().await?;
+    let bytes = client
+        .get(&feed.url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     let parsed = feed_rs::parser::parse(&bytes[..])?;
 
     let mut out = Vec::with_capacity(parsed.entries.len());
@@ -114,6 +121,7 @@ mod tests {
         let feed = Feed {
             url: "https://news.ycombinator.com/rss".to_string(),
             category: "Tech".to_string(),
+            name: "Hacker News".to_string(),
         };
         let articles = fetch_one(&client, &feed).await.expect("fetch_one failed");
         assert!(!articles.is_empty(), "expected at least one entry");

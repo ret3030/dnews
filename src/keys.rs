@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::app::{App, ReaderEvent, Screen};
+use crate::app::{App, Overlay, ReaderEvent, Screen};
 use crate::feed::fetch::FetchEvent;
 
 pub fn handle(
@@ -25,12 +25,38 @@ pub fn handle(
         return Ok(());
     }
 
+    app.notice = None;
+
+    // An open overlay swallows the key that closes it.
+    if app.overlay != Overlay::None {
+        app.overlay = Overlay::None;
+        return Ok(());
+    }
+
+    if !app.search_active && handle_global(app, key) {
+        return Ok(());
+    }
+
     match app.screen {
         Screen::List => handle_list(app, key, progress_tx, reader_tx, wide)?,
         Screen::Reader => handle_reader(app, key, reader_tx),
     }
 
     Ok(())
+}
+
+/// Keys that act the same on every screen (outside the search box).
+/// Returns true when the key was consumed.
+fn handle_global(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('?') => app.overlay = Overlay::Help,
+        KeyCode::Char('!') if !app.feed_errors.is_empty() => app.overlay = Overlay::FeedErrors,
+        KeyCode::Char('o') => app.open_in_browser(),
+        KeyCode::Char('y') => app.copy_link(),
+        KeyCode::Char('m') => app.toggle_read_current(),
+        _ => return false,
+    }
+    true
 }
 
 fn handle_list(
@@ -166,6 +192,7 @@ fn handle_list_wide(
 fn scroll_list(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('s') => app.toggle_saved_selected(),
+        KeyCode::Char('M') => app.mark_all_read(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
         KeyCode::Char('g') => app.move_to_top(),
@@ -621,5 +648,143 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.reader_scroll, 19);
+    }
+    #[test]
+    fn m_toggles_read_and_capital_m_marks_everything_listed_read() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        let unread_before = app.unread_count;
+        assert!(app.articles[0].unread);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('m')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(
+            !app.articles[0].unread,
+            "m should mark the selected article read"
+        );
+        assert_eq!(app.unread_count, unread_before - 1);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('m')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(
+            app.articles[0].unread,
+            "a second m should mark it unread again"
+        );
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('M')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(app.articles.iter().all(|a| !a.unread));
+        assert_eq!(app.unread_count, 0);
+
+        // The DB agrees, not just the in-memory rows.
+        app.reload_view().unwrap();
+        assert!(app.articles.iter().all(|a| !a.unread));
+    }
+
+    #[test]
+    fn help_overlay_swallows_the_key_that_closes_it() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('?')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.overlay, Overlay::Help);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('q')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit, "closing the overlay must not also quit");
+    }
+
+    #[test]
+    fn failed_feeds_overlay_only_opens_when_there_are_errors() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('!')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.overlay, Overlay::None);
+
+        app.record_feed_error("FRED Blog".into(), "HTTP status server error (504)".into());
+        handle(
+            &mut app,
+            key(KeyCode::Char('!')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.overlay, Overlay::FeedErrors);
+    }
+
+    #[test]
+    fn keys_typed_into_search_are_not_shortcuts() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('/')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        for c in ['m', 'o', '?'] {
+            handle(
+                &mut app,
+                key(KeyCode::Char(c)),
+                &progress_tx,
+                &reader_tx,
+                false,
+            )
+            .unwrap();
+        }
+        assert_eq!(app.search, "mo?");
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(
+            app.articles[0].unread,
+            "m inside search must not mark anything"
+        );
     }
 }

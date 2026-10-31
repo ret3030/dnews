@@ -9,6 +9,10 @@ use crate::app::App;
 use crate::store::ListFilter;
 
 const MAX_WIDTH: u16 = 130;
+/// Empty columns kept to the right of every title.
+const RIGHT_GUTTER: u16 = 3;
+/// Columns before a title starts: "  1  " plus the unread dot.
+const TITLE_INDENT: usize = 7;
 const LEFT_CAP: char = '\u{e0b6}';
 const RIGHT_CAP: char = '\u{e0b4}';
 
@@ -140,9 +144,15 @@ fn render_unread(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
+    // A gutter on both sides keeps titles off the pane edge (and, in the
+    // split layout, away from the article panel).
     let inner = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(RIGHT_GUTTER),
+        ])
         .split(area);
     let list_area = inner[1];
 
@@ -172,19 +182,16 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
                 (Span::styled("  ", dim), dim, dim, dim)
             };
 
-            // `List`/`ListItem` clip overflowing text at the area edge instead of
-            // wrapping it, which hard-cuts long titles mid-word — truncate with an
-            // ellipsis ourselves instead, budgeting for the fixed-width prefix/
-            // suffix spans on each line.
-            let line1_prefix_width = 5 + 2 + if row.saved { 2 } else { 0 };
-            let title = super::truncate(
-                &row.title,
-                (list_area.width as usize).saturating_sub(line1_prefix_width),
-            );
+            // `List` clips at the area edge instead of wrapping, so wrap the
+            // title ourselves at word boundaries: up to two lines, then an
+            // ellipsis.
+            let title_width = (list_area.width as usize)
+                .saturating_sub(TITLE_INDENT + if row.saved { 2 } else { 0 });
+            let mut title_lines = super::wrap_words(&row.title, title_width, 2).into_iter();
             let mut line1_spans = vec![
                 Span::styled(format!("{num}  "), Style::default().fg(theme::DIM)),
                 dot,
-                Span::styled(title, title_style),
+                Span::styled(title_lines.next().unwrap_or_default(), title_style),
             ];
             if row.saved {
                 line1_spans.push(Span::styled(
@@ -192,7 +199,13 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(theme::YELLOW),
                 ));
             }
-            let line1 = Line::from(line1_spans);
+            let mut lines = vec![Line::from(line1_spans)];
+            for rest in title_lines {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(TITLE_INDENT)),
+                    Span::styled(rest, title_style),
+                ]));
+            }
 
             let meta_suffix = format!(" · {ago}");
             let line2_prefix_width = 7 + meta_suffix.chars().count();
@@ -206,7 +219,9 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(meta_suffix, meta_style),
             ]);
 
-            Some(ListItem::new(Text::from(vec![line1, line2, Line::raw("")])))
+            lines.push(line2);
+            lines.push(Line::raw(""));
+            Some(ListItem::new(Text::from(lines)))
         })
         .collect();
 
@@ -239,31 +254,16 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 /// row so a narrow terminal wraps onto a second line instead of clipping.
 fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
     if !split {
-        &[
-            "↵ read",
-            "/ search",
-            "Tab/S-Tab tabs",
-            "s save",
-            "^R reload",
-            "j/k/g/G nav",
-            "q quit",
-        ]
+        &["↵ read", "/ search", "Tab tabs", "? help", "q quit"]
     } else if app.panel_focused {
-        &[
-            "Shift+J/K browse+preview",
-            "/ search",
-            "Tab/S-Tab tabs",
-            "^R reload",
-            "q back to list",
-        ]
+        &["J/K next/prev", "q back to list", "? help"]
     } else {
         &[
-            "↵ focus article",
+            "↵ read",
+            "J/K preview",
             "/ search",
-            "Tab/S-Tab tabs",
-            "s save",
-            "^R reload",
-            "j/k/g/G nav",
+            "Tab tabs",
+            "? help",
             "q quit",
         ]
     }
@@ -273,7 +273,11 @@ fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
 /// loading bar, or a status message (all bounded/truncated to fit one line),
 /// or however many the default hint text wraps to (see `super::wrap_hints`).
 fn footer_hint_lines(app: &App, split: bool, width: u16) -> u16 {
-    if app.search_active || app.loading || !app.status.is_empty() {
+    if app.search_active
+        || app.loading
+        || list_notice(app, split).is_some()
+        || !app.status.is_empty()
+    {
         return 1;
     }
     let usable = width.saturating_sub(1) as usize;
@@ -307,10 +311,18 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect, split: bool) {
             Span::styled(bar, Style::default().fg(theme::ACCENT)),
             Span::styled(suffix, Style::default().fg(theme::GRAY)),
         ])]
+    } else if let Some(notice) = list_notice(app, split) {
+        vec![Line::from(Span::styled(
+            format!(" {}", super::truncate(notice, width.saturating_sub(1))),
+            Style::default().fg(theme::ACCENT),
+        ))]
     } else if !app.status.is_empty() {
         vec![Line::from(Span::styled(
-            format!(" {}", super::truncate(&app.status, width.saturating_sub(1))),
-            Style::default().fg(theme::RED),
+            format!(
+                " ⚠ {}",
+                super::truncate(&app.status, width.saturating_sub(3))
+            ),
+            Style::default().fg(theme::YELLOW),
         ))]
     } else {
         // The split layout's hint depends on where plain-vim-key input
@@ -331,4 +343,12 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect, split: bool) {
         Paragraph::new(lines).style(Style::default().bg(theme::PANEL)),
         area,
     );
+}
+
+/// The notice belongs to the list footer unless the split layout's article
+/// panel has focus (then the panel's footer shows it).
+fn list_notice(app: &App, split: bool) -> Option<&String> {
+    app.notice
+        .as_ref()
+        .filter(|_| !(split && app.panel_focused))
 }
