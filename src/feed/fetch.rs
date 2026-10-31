@@ -94,6 +94,12 @@ async fn fetch_one(client: &reqwest::Client, feed: &Feed) -> anyhow::Result<Vec<
         let Some(link) = entry.links.first().map(|l| l.href.clone()) else {
             continue;
         };
+        let summary = entry
+            .summary
+            .map(|s| s.content)
+            .or_else(|| entry.content.and_then(|c| c.body))
+            .map(|html| plain_summary(&html))
+            .unwrap_or_default();
         let published = entry
             .published
             .or(entry.updated)
@@ -102,12 +108,43 @@ async fn fetch_one(client: &reqwest::Client, feed: &Feed) -> anyhow::Result<Vec<
 
         out.push(NewArticle {
             category: feed.category.clone(),
+            source: feed.name.clone(),
+            summary,
             title,
             link,
             published,
         });
     }
     Ok(out)
+}
+
+/// Longest summary kept per article, in characters.
+const SUMMARY_MAX_CHARS: usize = 400;
+
+/// Feed descriptions are often HTML (and sometimes a whole article): strip
+/// the markup, collapse whitespace and keep the first few sentences.
+fn plain_summary(html: &str) -> String {
+    // Text nodes are joined as-is so inline tags (`<b>world</b>.`) don't gain
+    // a space; block boundaries get one so paragraphs don't run together.
+    let mut spaced = html.to_string();
+    for tag in [
+        "<p", "</p", "<br", "<div", "</div", "<li", "<h", "</h", "<tr", "<td",
+    ] {
+        spaced = spaced.replace(tag, &format!(" {tag}"));
+    }
+    let text: String = scraper::Html::parse_fragment(&spaced)
+        .root_element()
+        .text()
+        .collect();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= SUMMARY_MAX_CHARS {
+        return text;
+    }
+    let cut: String = text.chars().take(SUMMARY_MAX_CHARS).collect();
+    match cut.rfind(' ') {
+        Some(i) => format!("{}…", &cut[..i]),
+        None => format!("{cut}…"),
+    }
 }
 
 #[cfg(test)]
@@ -127,5 +164,17 @@ mod tests {
         assert!(!articles.is_empty(), "expected at least one entry");
         assert!(!articles[0].title.is_empty());
         assert!(articles[0].link.starts_with("http"));
+    }
+
+    #[test]
+    fn summary_is_plain_text_and_bounded() {
+        assert_eq!(
+            plain_summary("<p>Hello <b>world</b>.</p>\n<p>Second   line.</p>"),
+            "Hello world. Second line."
+        );
+        let long = "word ".repeat(200);
+        let s = plain_summary(&long);
+        assert!(s.chars().count() <= SUMMARY_MAX_CHARS + 1);
+        assert!(s.ends_with('…'));
     }
 }

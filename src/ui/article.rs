@@ -36,7 +36,11 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let row = app.reader_article.as_ref();
     let (title, domain, date, saved) = match row {
         Some(r) => {
-            let domain = super::domain(&r.link);
+            let domain = if r.source.is_empty() {
+                super::domain(&r.link)
+            } else {
+                r.source.clone()
+            };
             let date = chrono::Local
                 .timestamp_opt(r.published, 0)
                 .single()
@@ -98,12 +102,31 @@ fn render_body(f: &mut Frame, app: &App, area: Rect) {
         )))
         .alignment(Alignment::Center)
     } else if let Some(err) = &app.reader_error {
-        Paragraph::new(Line::from(Span::styled(
-            format!("Could not load article: {err}"),
-            Style::default().fg(theme::RED),
-        )))
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
+        // Fall back to the feed's own summary so there's still something to
+        // read; `o` opens the full article in the browser.
+        let mut lines = vec![
+            Line::styled(
+                format!("Could not load the full article: {err}"),
+                Style::default().fg(theme::RED),
+            ),
+            Line::styled(
+                "Press o to open it in the browser.",
+                Style::default().fg(theme::GRAY),
+            ),
+        ];
+        let summary = app
+            .reader_article
+            .as_ref()
+            .map(|a| a.summary.as_str())
+            .unwrap_or_default();
+        if !summary.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                summary.to_string(),
+                Style::default().fg(theme::FG),
+            ));
+        }
+        Paragraph::new(lines).wrap(Wrap { trim: true })
     } else if let Some(content) = &app.reader {
         Paragraph::new(
             content

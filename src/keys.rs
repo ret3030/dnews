@@ -193,6 +193,7 @@ fn scroll_list(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('s') => app.toggle_saved_selected(),
         KeyCode::Char('M') => app.mark_all_read(),
+        KeyCode::Char('c') => app.toggle_compact(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
         KeyCode::Char('g') => app.move_to_top(),
@@ -261,12 +262,14 @@ mod tests {
                 title: "Newer Story".into(),
                 link: "https://example.com/newer".into(),
                 published: 200,
+                ..Default::default()
             },
             NewArticle {
                 category: String::new(),
                 title: "Older Story".into(),
                 link: "https://example.com/older".into(),
                 published: 100,
+                ..Default::default()
             },
         ])
         .unwrap();

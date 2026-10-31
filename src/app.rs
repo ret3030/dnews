@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -7,6 +8,8 @@ use crate::feed::Feed;
 use crate::feed::fetch::{self, FetchEvent};
 use crate::reader::{self, ReaderContent};
 use crate::store::{ArticleRow, ListFilter, Store};
+
+const COMPACT_KEY: &str = "compact";
 
 /// Unsaved articles older than this get deleted by `prune_old_articles`.
 const PRUNE_AFTER_SECS: i64 = 60 * 24 * 60 * 60;
@@ -68,6 +71,10 @@ pub struct App {
     pub reader_error: Option<String>,
 
     pub unread_count: i64,
+    /// Unread articles per category, for the tab labels.
+    pub tab_unread: HashMap<String, i64>,
+    /// One line per article instead of title + meta. Persisted in the DB.
+    pub compact: bool,
     pub loading: bool,
     pub total_feeds: usize,
     pub done_feeds: usize,
@@ -104,6 +111,7 @@ impl App {
                 categories.push(f.category.clone());
             }
         }
+        let compact = db.setting(COMPACT_KEY).ok().flatten().as_deref() == Some("1");
 
         Self {
             db,
@@ -123,6 +131,8 @@ impl App {
             reader_loading: false,
             reader_error: None,
             unread_count: 0,
+            tab_unread: HashMap::new(),
+            compact,
             loading: false,
             total_feeds: 0,
             done_feeds: 0,
@@ -161,9 +171,24 @@ impl App {
 
     pub fn reload_view(&mut self) -> Result<()> {
         self.articles = self.db.list(&self.filter)?;
-        self.unread_count = self.db.unread_count()?;
+        self.refresh_counts();
         self.apply_search();
         Ok(())
+    }
+
+    /// Re-reads the unread totals from the DB after anything marks articles.
+    pub fn refresh_counts(&mut self) {
+        self.unread_count = self.db.unread_count().unwrap_or(self.unread_count);
+        if let Ok(by_category) = self.db.unread_by_category() {
+            self.tab_unread = by_category;
+        }
+    }
+
+    pub fn toggle_compact(&mut self) {
+        self.compact = !self.compact;
+        let _ = self
+            .db
+            .set_setting(COMPACT_KEY, if self.compact { "1" } else { "0" });
     }
 
     pub fn apply_search(&mut self) {
@@ -314,11 +339,12 @@ impl App {
             return;
         };
 
-        if row.unread {
-            row.unread = false;
-            self.unread_count = (self.unread_count - 1).max(0);
-        }
+        let was_unread = std::mem::replace(&mut row.unread, false);
+        let row = row.clone();
         let _ = self.db.mark_read(&row.link);
+        if was_unread {
+            self.refresh_counts();
+        }
 
         self.reader_scroll = 0;
         self.reader_error = None;
@@ -404,7 +430,7 @@ impl App {
             open.unread = unread;
         }
         let _ = self.db.set_unread(&link, unread);
-        self.unread_count = (self.unread_count + if unread { 1 } else { -1 }).max(0);
+        self.refresh_counts();
         self.notice = Some(
             if unread {
                 "Marked unread"
@@ -433,7 +459,7 @@ impl App {
                 a.unread = false;
             }
         }
-        self.unread_count = self.db.unread_count().unwrap_or(0);
+        self.refresh_counts();
         self.notice = Some(format!("Marked {} read", links.len()));
     }
 
@@ -523,6 +549,7 @@ mod tests {
             unread: false,
             saved: false,
             content_text: None,
+            ..Default::default()
         }
     }
 

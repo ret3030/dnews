@@ -7,8 +7,11 @@ pub struct Store {
     path: std::path::PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ArticleRow {
+    /// Feed name from the OPML; empty for rows stored before it existed.
+    pub source: String,
+    pub summary: String,
     pub title: String,
     pub link: String,
     pub published: i64,
@@ -17,8 +20,11 @@ pub struct ArticleRow {
     pub content_text: Option<String>,
 }
 
+#[derive(Default)]
 pub struct NewArticle {
     pub category: String,
+    pub source: String,
+    pub summary: String,
     pub title: String,
     pub link: String,
     pub published: i64,
@@ -63,13 +69,18 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category);
             CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);",
         )?;
-        // Older dev DBs predate the `saved` column; add it if missing rather
-        // than requiring a fresh DB. SQLite has no `ADD COLUMN IF NOT
-        // EXISTS`, so just ignore the "duplicate column" error.
-        let _ = conn.execute(
-            "ALTER TABLE articles ADD COLUMN saved INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
+        // Columns added after the first release. SQLite has no `ADD COLUMN
+        // IF NOT EXISTS`, so the "duplicate column" error is ignored.
+        for column in [
+            "saved INTEGER NOT NULL DEFAULT 0",
+            "source TEXT NOT NULL DEFAULT ''",
+            "summary TEXT NOT NULL DEFAULT ''",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE articles ADD COLUMN {column}"), []);
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
         Ok(())
     }
 
@@ -84,11 +95,13 @@ impl Store {
                 unread: r.get::<_, i64>(3)? != 0,
                 saved: r.get::<_, i64>(4)? != 0,
                 content_text: r.get(5)?,
+                source: r.get(6)?,
+                summary: r.get(7)?,
             });
             Ok(())
         };
 
-        const COLS: &str = "title, link, published, unread, saved, content_text";
+        const COLS: &str = "title, link, published, unread, saved, content_text, source, summary";
         match filter {
             ListFilter::All => {
                 let mut stmt = conn.prepare(&format!(
@@ -119,6 +132,36 @@ impl Store {
             }
         }
         Ok(rows)
+    }
+
+    /// Unread articles per category.
+    pub fn unread_by_category(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT category, count(*) FROM articles WHERE unread = 1 GROUP BY category",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(r.get(0)?),
+            None => None,
+        })
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn unread_count(&self) -> Result<i64> {
@@ -184,15 +227,24 @@ impl Store {
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO articles (category, title, link, published, unread)
-                 VALUES (?1, ?2, ?3, ?4, 1)
+                "INSERT INTO articles (category, source, summary, title, link, published, unread)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
                  ON CONFLICT(link) DO UPDATE SET
                     category = excluded.category,
+                    source = excluded.source,
+                    summary = excluded.summary,
                     title = excluded.title,
                     published = excluded.published",
             )?;
             for a in articles {
-                stmt.execute(params![a.category, a.title, a.link, a.published])?;
+                stmt.execute(params![
+                    a.category,
+                    a.source,
+                    a.summary,
+                    a.title,
+                    a.link,
+                    a.published
+                ])?;
             }
         }
         tx.commit()?;
@@ -252,18 +304,21 @@ mod tests {
                     title: "old unsaved".into(),
                     link: "https://example.com/old-unsaved".into(),
                     published: 1000,
+                    ..Default::default()
                 },
                 NewArticle {
                     category: "".into(),
                     title: "old saved".into(),
                     link: "https://example.com/old-saved".into(),
                     published: 1000,
+                    ..Default::default()
                 },
                 NewArticle {
                     category: "".into(),
                     title: "recent".into(),
                     link: "https://example.com/recent".into(),
                     published: 1_000_000,
+                    ..Default::default()
                 },
             ])
             .unwrap();
@@ -294,6 +349,7 @@ mod tests {
                 title: "keep me".into(),
                 link: "https://example.com/keep-me".into(),
                 published: 1000,
+                ..Default::default()
             }])
             .unwrap();
         store
@@ -333,5 +389,79 @@ mod tests {
         // Deliberately not calling init_schema(): the file doesn't exist yet.
         store.backup().unwrap();
         assert!(!path.with_extension("db.bak").exists());
+    }
+    #[test]
+    fn init_schema_upgrades_a_db_from_before_source_and_summary() {
+        let store = test_store();
+        // Recreate the original table layout, with one existing row.
+        let conn = store.conn().unwrap();
+        conn.execute_batch(
+            "DROP TABLE articles;
+             CREATE TABLE articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL,
+                link TEXT NOT NULL UNIQUE,
+                published INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 1,
+                content_text TEXT
+             );
+             INSERT INTO articles (title, link) VALUES ('old', 'https://example.com/old');",
+        )
+        .unwrap();
+
+        store.init_schema().unwrap();
+        let rows = store.list(&ListFilter::All).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "");
+
+        store
+            .upsert_batch(&[NewArticle {
+                source: "BBC World".into(),
+                summary: "A summary.".into(),
+                title: "old".into(),
+                link: "https://example.com/old".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let rows = store.list(&ListFilter::All).unwrap();
+        assert_eq!(rows[0].source, "BBC World");
+        assert_eq!(rows[0].summary, "A summary.");
+    }
+
+    #[test]
+    fn settings_round_trip_and_unread_counts_group_by_category() {
+        let store = test_store();
+        assert_eq!(store.setting("compact").unwrap(), None);
+        store.set_setting("compact", "1").unwrap();
+        store.set_setting("compact", "0").unwrap();
+        assert_eq!(store.setting("compact").unwrap().as_deref(), Some("0"));
+
+        store
+            .upsert_batch(&[
+                NewArticle {
+                    category: "World".into(),
+                    title: "a".into(),
+                    link: "https://example.com/a".into(),
+                    ..Default::default()
+                },
+                NewArticle {
+                    category: "World".into(),
+                    title: "b".into(),
+                    link: "https://example.com/b".into(),
+                    ..Default::default()
+                },
+                NewArticle {
+                    category: "Tech".into(),
+                    title: "c".into(),
+                    link: "https://example.com/c".into(),
+                    ..Default::default()
+                },
+            ])
+            .unwrap();
+        store.mark_read("https://example.com/c").unwrap();
+        let counts = store.unread_by_category().unwrap();
+        assert_eq!(counts.get("World"), Some(&2));
+        assert_eq!(counts.get("Tech"), None);
     }
 }

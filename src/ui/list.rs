@@ -4,15 +4,20 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
+use chrono::{Local, TimeZone};
+use unicode_width::UnicodeWidthStr;
+
 use super::theme;
 use crate::app::App;
-use crate::store::ListFilter;
+use crate::store::{ArticleRow, ListFilter};
 
 const MAX_WIDTH: u16 = 130;
 /// Empty columns kept to the right of every title.
 const RIGHT_GUTTER: u16 = 3;
-/// Columns before a title starts: "  1  " plus the unread dot.
-const TITLE_INDENT: usize = 7;
+/// Columns before a title starts: two spaces plus the unread dot.
+const TITLE_INDENT: usize = 4;
+/// Source name column width in compact mode.
+const COMPACT_SOURCE_W: usize = 16;
 const LEFT_CAP: char = '\u{e0b6}';
 const RIGHT_CAP: char = '\u{e0b4}';
 
@@ -43,12 +48,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, split: bool) {
 const COMPACT_TABS_MAX_WIDTH: u16 = 70;
 
 fn tab_labels(app: &App) -> Vec<(String, bool)> {
-    let mut labels: Vec<(String, bool)> = vec![("All".into(), app.filter == ListFilter::All)];
-    labels.extend(
-        app.categories
-            .iter()
-            .map(|c| (c.clone(), app.filter == ListFilter::Category(c.clone()))),
-    );
+    let label = |name: &str, unread: i64| {
+        if unread > 0 {
+            format!("{name} {unread}")
+        } else {
+            name.to_string()
+        }
+    };
+    let mut labels = vec![(
+        label("All", app.unread_count),
+        app.filter == ListFilter::All,
+    )];
+    labels.extend(app.categories.iter().map(|c| {
+        let unread = app.tab_unread.get(c).copied().unwrap_or(0);
+        (
+            label(c, unread),
+            app.filter == ListFilter::Category(c.clone()),
+        )
+    }));
     labels.push(("Saved".into(), app.filter == ListFilter::Saved));
     labels
 }
@@ -102,7 +119,7 @@ fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
         // The Saved tab's bookmark icon is decorative and Nerd-Font-
         // dependent like the pill caps themselves, so it only shows up
         // here — the compact fallback tabs never use it.
-        let text = if label == "Saved" {
+        let text = if *label == "Saved" {
             format!(" \u{f005} {label} ")
         } else {
             format!(" {label} ")
@@ -136,11 +153,130 @@ fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
 }
 
 fn render_unread(f: &mut Frame, app: &App, area: Rect) {
+    let shown = app.filtered.len();
+    let unread = app
+        .filtered
+        .iter()
+        .filter_map(|&i| app.articles.get(i))
+        .filter(|a| a.unread)
+        .count();
     let line = Line::from(vec![Span::styled(
-        format!(" {} unread", app.unread_count),
+        format!(" {unread} unread of {shown}"),
         Style::default().fg(theme::GRAY),
     )]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// Heading for the day an article was published, in local time.
+pub fn day_label(published: i64, today: chrono::NaiveDate) -> String {
+    let Some(date) = Local
+        .timestamp_opt(published, 0)
+        .single()
+        .filter(|_| published > 0)
+        .map(|d| d.date_naive())
+    else {
+        return "Undated".into();
+    };
+    match (today - date).num_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => date.format("%a %-d %b").to_string(),
+    }
+}
+
+/// Builds one list entry; `width` is the usable column count.
+fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'static> {
+    let source = if row.source.is_empty() {
+        super::domain(&row.link)
+    } else {
+        row.source.clone()
+    };
+    let ago = super::time_ago(row.published);
+
+    let (dot, title_style, source_style, meta_style) = if row.unread {
+        (
+            Span::styled("● ", Style::default().fg(theme::ACCENT)),
+            Style::default()
+                .fg(theme::FG_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::source_color(&source))
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::GRAY),
+        )
+    } else {
+        // Read items step back but stay legible.
+        (
+            Span::raw("  "),
+            Style::default().fg(theme::GRAY),
+            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::DIM),
+        )
+    };
+    let star = row
+        .saved
+        .then(|| Span::styled(" \u{f005}", Style::default().fg(theme::YELLOW)));
+    let star_w = if row.saved { 2 } else { 0 };
+
+    if compact {
+        // Fixed-width meta column so every title ends at the same place:
+        // "  ● Title ……………   BBC World          3h ago"
+        let source = pad_to(&super::truncate(&source, COMPACT_SOURCE_W), COMPACT_SOURCE_W);
+        let meta = format!("  {source} {ago:>7}");
+        let title_w = width.saturating_sub(TITLE_INDENT + star_w + meta.width());
+        let title = super::truncate(&row.title, title_w);
+        let pad = title_w.saturating_sub(title.width());
+        let mut spans = vec![Span::raw("  "), dot, Span::styled(title, title_style)];
+        spans.extend(star);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(meta, meta_style));
+        return ListItem::new(Line::from(spans));
+    }
+
+    // `List` clips at the area edge instead of wrapping, so wrap the title
+    // ourselves at word boundaries: up to two lines, then an ellipsis.
+    let title_w = width.saturating_sub(TITLE_INDENT + star_w);
+    let mut title_lines = super::wrap_words(&row.title, title_w, 2).into_iter();
+    let mut first = vec![
+        Span::raw("  "),
+        dot,
+        Span::styled(title_lines.next().unwrap_or_default(), title_style),
+    ];
+    first.extend(star);
+    let mut lines = vec![Line::from(first)];
+    for rest in title_lines {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled(rest, title_style),
+        ]));
+    }
+    let suffix = format!(" · {ago}");
+    let source = super::truncate(&source, width.saturating_sub(TITLE_INDENT + suffix.width()));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(TITLE_INDENT)),
+        Span::styled(source, source_style),
+        Span::styled(suffix, meta_style),
+    ]));
+    lines.push(Line::raw(""));
+    ListItem::new(Text::from(lines))
+}
+
+/// Pads `s` with spaces to `width` display columns.
+fn pad_to(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(s.width())))
+}
+
+fn separator_item(label: &str, width: usize) -> ListItem<'static> {
+    let rule = "─".repeat(width.saturating_sub(label.width() + 3));
+    ListItem::new(Line::from(vec![
+        Span::styled(
+            format!(" {label} "),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(rule, Style::default().fg(theme::BORDER)),
+    ]))
 }
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
@@ -155,87 +291,39 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
     let list_area = inner[1];
+    let width = list_area.width as usize;
 
-    let items: Vec<ListItem> = app
-        .filtered
-        .iter()
-        .enumerate()
-        .filter_map(|(display_idx, &article_idx)| {
-            let row = app.articles.get(article_idx)?;
-            let domain = super::domain(&row.link);
-            let ago = super::time_ago(row.published);
-            let num = format!("{:>3}", display_idx + 1);
-
-            let (dot, title_style, meta_style, domain_style) = if row.unread {
-                (
-                    Span::styled("● ", Style::default().fg(theme::ACCENT)),
-                    Style::default()
-                        .fg(theme::FG_BRIGHT)
-                        .add_modifier(Modifier::BOLD),
-                    Style::default().fg(theme::GRAY),
-                    Style::default()
-                        .fg(theme::source_color(&domain))
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                let dim = Style::default().fg(theme::DIM);
-                (Span::styled("  ", dim), dim, dim, dim)
-            };
-
-            // `List` clips at the area edge instead of wrapping, so wrap the
-            // title ourselves at word boundaries: up to two lines, then an
-            // ellipsis.
-            let title_width = (list_area.width as usize)
-                .saturating_sub(TITLE_INDENT + if row.saved { 2 } else { 0 });
-            let mut title_lines = super::wrap_words(&row.title, title_width, 2).into_iter();
-            let mut line1_spans = vec![
-                Span::styled(format!("{num}  "), Style::default().fg(theme::DIM)),
-                dot,
-                Span::styled(title_lines.next().unwrap_or_default(), title_style),
-            ];
-            if row.saved {
-                line1_spans.push(Span::styled(
-                    " \u{f005}",
-                    Style::default().fg(theme::YELLOW),
-                ));
-            }
-            let mut lines = vec![Line::from(line1_spans)];
-            for rest in title_lines {
-                lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(TITLE_INDENT)),
-                    Span::styled(rest, title_style),
-                ]));
-            }
-
-            let meta_suffix = format!(" · {ago}");
-            let line2_prefix_width = 7 + meta_suffix.chars().count();
-            let domain_trunc = super::truncate(
-                &domain,
-                (list_area.width as usize).saturating_sub(line2_prefix_width),
-            );
-            let line2 = Line::from(vec![
-                Span::raw("       "),
-                Span::styled(domain_trunc, domain_style),
-                Span::styled(meta_suffix, meta_style),
-            ]);
-
-            lines.push(line2);
-            lines.push(Line::raw(""));
-            Some(ListItem::new(Text::from(lines)))
-        })
-        .collect();
-
-    let empty_msg = if app.loading {
-        format!("  {} Fetching feeds...", super::spinner(app.spin_frame))
-    } else if app.filter == ListFilter::Saved {
-        "  Nothing saved yet — press 's' on an article to save it".to_string()
-    } else if app.search_active || !app.search.is_empty() {
-        "  No matches".to_string()
-    } else {
-        "  No articles yet".to_string()
-    };
+    // Day separators are extra list items, so the selection index into
+    // `filtered` is mapped to its position among all items.
+    let today = Local::now().date_naive();
+    let mut items = Vec::with_capacity(app.filtered.len() + 8);
+    let mut selected_item = 0;
+    let mut last_day: Option<String> = None;
+    for (pos, &idx) in app.filtered.iter().enumerate() {
+        let Some(row) = app.articles.get(idx) else {
+            continue;
+        };
+        let day = day_label(row.published, today);
+        if last_day.as_ref() != Some(&day) {
+            items.push(separator_item(&day, width));
+            last_day = Some(day);
+        }
+        if pos == app.selected {
+            selected_item = items.len();
+        }
+        items.push(article_item(row, width, app.compact));
+    }
 
     if items.is_empty() {
+        let empty_msg = if app.loading {
+            format!("  {} Fetching feeds...", super::spinner(app.spin_frame))
+        } else if app.filter == ListFilter::Saved {
+            "  Nothing saved yet. Press s on an article to save it.".to_string()
+        } else if app.search_active || !app.search.is_empty() {
+            "  No matches".to_string()
+        } else {
+            "  No articles yet".to_string()
+        };
         f.render_widget(
             Paragraph::new(empty_msg).style(Style::default().fg(theme::GRAY)),
             list_area,
@@ -244,8 +332,7 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let list = List::new(items).highlight_style(Style::default().bg(theme::SEL_BG));
-
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let mut state = ListState::default().with_selected(Some(selected_item));
     f.render_stateful_widget(list, list_area, &mut state);
 }
 

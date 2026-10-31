@@ -374,12 +374,14 @@ mod tests {
                 title: "Rust is great".into(),
                 link: "https://example.com/a".into(),
                 published: chrono::Utc::now().timestamp(),
+                ..Default::default()
             },
             NewArticle {
                 category: "Zprávy".into(),
                 title: "Nějaká zpráva".into(),
                 link: "https://irozhlas.cz/b".into(),
                 published: chrono::Utc::now().timestamp(),
+                ..Default::default()
             },
         ])
         .unwrap();
@@ -426,6 +428,7 @@ mod tests {
             title: "A Wide Article Title".into(),
             link: "https://example.com/a".into(),
             published: chrono::Utc::now().timestamp(),
+            ..Default::default()
         }])
         .unwrap();
 
@@ -461,6 +464,7 @@ mod tests {
             title: "Split View Story".into(),
             link: "https://example.com/a".into(),
             published: chrono::Utc::now().timestamp(),
+            ..Default::default()
         }])
         .unwrap();
 
@@ -507,6 +511,7 @@ mod tests {
             title: "Long Article".into(),
             link: "https://example.com/long".into(),
             published: chrono::Utc::now().timestamp(),
+            ..Default::default()
         }])
         .unwrap();
 
@@ -582,6 +587,7 @@ mod tests {
             title: "Several EU countries on track to fail nature targets set for the end of the decade, report finds".into(),
             link: "https://example.com/a".into(),
             published: chrono::Utc::now().timestamp(),
+            ..Default::default()
         }])
         .unwrap();
         let mut app = App::new(db, vec![]);
@@ -596,6 +602,133 @@ mod tests {
         }
         assert!(out.contains("decade") || out.contains('…'));
 
+        let _ = std::fs::remove_file(&path);
+    }
+    fn app_with(articles: &[NewArticle], name: &str) -> (App, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("dnews_ui_test_{name}_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Store::open(&path).unwrap();
+        db.init_schema().unwrap();
+        db.upsert_batch(articles).unwrap();
+        let feeds = vec![Feed {
+            url: "https://example.com/feed".into(),
+            category: "World".into(),
+            name: "Example".into(),
+        }];
+        let mut app = App::new(db, feeds);
+        app.reload_view().unwrap();
+        (app, path)
+    }
+
+    #[test]
+    fn list_groups_articles_under_day_headings_and_shows_the_source_name() {
+        let now = chrono::Utc::now().timestamp();
+        let (app, path) = app_with(
+            &[
+                NewArticle {
+                    category: "World".into(),
+                    source: "BBC World".into(),
+                    title: "Fresh story".into(),
+                    link: "https://feeds.bbci.co.uk/a".into(),
+                    published: now - 60,
+                    ..Default::default()
+                },
+                NewArticle {
+                    category: "World".into(),
+                    title: "Older story".into(),
+                    link: "https://example.com/b".into(),
+                    published: now - 3 * 86_400,
+                    ..Default::default()
+                },
+            ],
+            "days",
+        );
+        let out = dump(100, 30, &app);
+        assert!(out.contains("Today"), "{out}");
+        assert!(
+            out.contains("BBC World"),
+            "source name should replace the domain"
+        );
+        assert!(!out.contains("feeds.bbci.co.uk"));
+        assert!(
+            out.contains("example.com"),
+            "falls back to the domain without a source"
+        );
+        assert!(out.contains("World 2"), "tab shows its unread count");
+        let today = out.find("Today").unwrap();
+        let older = out.find("Older story").unwrap();
+        assert!(today < out.find("Fresh story").unwrap() && today < older);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn day_label_names_recent_days() {
+        use chrono::TimeZone;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 31).unwrap();
+        let at = |d: u32, h: u32| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, d, h, 0, 0)
+                .unwrap()
+                .timestamp()
+        };
+        assert_eq!(super::list::day_label(at(31, 8), today), "Today");
+        assert_eq!(super::list::day_label(at(30, 23), today), "Yesterday");
+        assert_eq!(super::list::day_label(at(28, 12), today), "Wed 28 Oct");
+        assert_eq!(super::list::day_label(0, today), "Undated");
+    }
+
+    #[test]
+    fn compact_mode_uses_one_line_per_article() {
+        let now = chrono::Utc::now().timestamp();
+        let (mut app, path) = app_with(
+            &[NewArticle {
+                category: "World".into(),
+                source: "DW World".into(),
+                title: "A compact headline".into(),
+                link: "https://example.com/a".into(),
+                published: now,
+                ..Default::default()
+            }],
+            "compact",
+        );
+        app.compact = true;
+        let out = dump(100, 20, &app);
+        let line = out
+            .lines()
+            .find(|l| l.contains("A compact headline"))
+            .unwrap();
+        assert!(
+            line.contains("DW World"),
+            "source sits on the title line: {line:?}"
+        );
+        assert!(line.trim_end().ends_with("ago"));
+        assert!(
+            line.find("DW World").unwrap() > line.find("A compact headline").unwrap() + 20,
+            "meta sits in its own right-hand column"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reader_falls_back_to_the_feed_summary_when_fetching_fails() {
+        let (mut app, path) = app_with(
+            &[NewArticle {
+                category: "World".into(),
+                title: "Paywalled".into(),
+                summary: "The feed's own short summary.".into(),
+                link: "https://example.com/a".into(),
+                published: chrono::Utc::now().timestamp(),
+                ..Default::default()
+            }],
+            "fallback",
+        );
+        app.screen = crate::app::Screen::Reader;
+        app.reader_article = app.articles.first().cloned();
+        app.reader_error = Some("HTTP 403".into());
+        let out = dump(100, 20, &app);
+        assert!(out.contains("The feed's own short summary."), "{out}");
+        assert!(out.contains("open it in the browser"));
         let _ = std::fs::remove_file(&path);
     }
 }

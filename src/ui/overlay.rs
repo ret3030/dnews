@@ -20,6 +20,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Enter", "read article"),
             ("Tab / S-Tab", "next / previous tab"),
             ("/", "search titles"),
+            ("c", "compact list"),
             ("M", "mark all listed as read"),
             ("Ctrl+R", "reload feeds"),
             ("q", "quit"),
