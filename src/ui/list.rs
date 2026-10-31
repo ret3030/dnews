@@ -23,21 +23,24 @@ const RIGHT_CAP: char = '\u{e0b4}';
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect, split: bool) {
     let area = super::centered(area, MAX_WIDTH);
-    let footer_lines = footer_hint_lines(app, split, area.width).max(1);
+    let footer = footer_lines(app, split, area.width as usize);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(footer_lines),
+            Constraint::Length(footer.len() as u16),
         ])
         .split(area);
 
     render_tabs(f, app, chunks[0]);
     render_unread(f, app, chunks[1]);
     render_list(f, app, chunks[2]);
-    render_footer(f, app, chunks[3], split);
+    f.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme::PANEL)),
+        chunks[3],
+    );
 }
 
 /// The pill-style tab bar needs a Nerd Font for its powerline cap glyphs
@@ -352,80 +355,56 @@ fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
     }
 }
 
-/// How many rows the footer needs at `width` columns: 1 for the search box,
-/// loading bar, or a status message (all bounded/truncated to fit one line),
-/// or however many the default hint text wraps to (see `super::wrap_hints`).
-fn footer_hint_lines(app: &App, split: bool, width: u16) -> u16 {
-    if app.search_active
-        || app.loading
-        || list_notice(app, split).is_some()
-        || !app.status.is_empty()
-    {
-        return 1;
-    }
-    let usable = width.saturating_sub(1) as usize;
-    super::wrap_hints(default_hints(app, split), "   ", usable).len() as u16
-}
+/// The footer: search box, reload progress, a notice or warning, or the key
+/// hints (wrapped onto more lines on a narrow terminal).
+fn footer_lines(app: &App, split: bool, width: usize) -> Vec<Line<'static>> {
+    let width = width.saturating_sub(2);
+    let one = |text: String, color| vec![Line::styled(text, Style::default().fg(color))];
 
-fn render_footer(f: &mut Frame, app: &App, area: Rect, split: bool) {
-    let width = area.width.saturating_sub(2) as usize;
-    let lines: Vec<Line> = if app.search_active {
+    if app.search_active {
         let query = super::truncate_start(&app.search, width.saturating_sub(3));
-        vec![Line::from(vec![
+        return vec![Line::from(vec![
             Span::styled(" / ", Style::default().fg(theme::YELLOW)),
             Span::styled(query, Style::default().fg(theme::FG)),
             Span::styled("█", Style::default().fg(theme::YELLOW)),
-        ])]
-    } else if app.loading {
+        ])];
+    }
+    if app.loading {
         let prefix = format!(" {} Fetching feeds  ", super::spinner(app.spin_frame));
         let total = app.total_feeds.max(1);
         let done = app.done_feeds.min(total);
         let suffix = format!("  {done}/{total}");
-        // Shrink the bar itself (not the surrounding text) to whatever's
-        // left, so the whole line always fits one row instead of wrapping
-        // a progress bar mid-fill.
-        let bar_width = (area.width as usize)
-            .saturating_sub(prefix.chars().count() + suffix.chars().count())
+        // The bar shrinks so the line never wraps.
+        let bar_width = width
+            .saturating_sub(prefix.width() + suffix.width())
             .clamp(4, 24);
         let filled = done * bar_width / total;
-        let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
-        vec![Line::from(vec![
+        let bar = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+        return vec![Line::from(vec![
             Span::styled(prefix, Style::default().fg(theme::ACCENT)),
             Span::styled(bar, Style::default().fg(theme::ACCENT)),
             Span::styled(suffix, Style::default().fg(theme::GRAY)),
-        ])]
-    } else if let Some(notice) = list_notice(app, split) {
-        vec![Line::from(Span::styled(
+        ])];
+    }
+    if let Some(notice) = list_notice(app, split) {
+        return one(
             format!(" {}", super::truncate(notice, width.saturating_sub(1))),
-            Style::default().fg(theme::ACCENT),
-        ))]
-    } else if !app.status.is_empty() {
-        vec![Line::from(Span::styled(
+            theme::ACCENT,
+        );
+    }
+    if !app.status.is_empty() {
+        return one(
             format!(
                 " ⚠ {}",
                 super::truncate(&app.status, width.saturating_sub(3))
             ),
-            Style::default().fg(theme::YELLOW),
-        ))]
-    } else {
-        // The split layout's hint depends on where plain-vim-key input
-        // currently goes (see `App::panel_focused` / `keys::handle_list_wide`):
-        // while the panel is focused, only Shift+J/K still reach the list.
-        super::wrap_hints(default_hints(app, split), "   ", width)
-            .into_iter()
-            .map(|l| {
-                Line::from(Span::styled(
-                    format!(" {l}"),
-                    Style::default().fg(theme::GRAY),
-                ))
-            })
-            .collect()
-    };
-
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::PANEL)),
-        area,
-    );
+            theme::YELLOW,
+        );
+    }
+    super::wrap_hints(default_hints(app, split), "   ", width)
+        .into_iter()
+        .map(|l| Line::styled(format!(" {l}"), Style::default().fg(theme::GRAY)))
+        .collect()
 }
 
 /// The notice belongs to the list footer unless the split layout's article

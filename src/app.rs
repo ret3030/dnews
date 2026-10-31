@@ -210,10 +210,20 @@ impl App {
         if pos == article.scroll_pos {
             return;
         }
-        let _ = self.db.set_scroll(&article.link, pos);
         let link = article.link.clone();
+        let _ = self.db.set_scroll(&link, pos);
+        self.update_article(&link, |a| a.scroll_pos = pos);
+    }
+
+    /// An article can be on screen twice: its row in `articles` and the
+    /// `reader_article` snapshot. Every change goes through here so the two
+    /// never disagree.
+    fn update_article(&mut self, link: &str, change: impl Fn(&mut ArticleRow)) {
         if let Some(row) = self.articles.iter_mut().find(|a| a.link == link) {
-            row.scroll_pos = pos;
+            change(row);
+        }
+        if let Some(open) = self.reader_article.as_mut().filter(|a| a.link == link) {
+            change(open);
         }
     }
 
@@ -290,42 +300,20 @@ impl App {
         self.selected = self.filtered.len().saturating_sub(1);
     }
 
-    /// Toggles the saved-for-later flag, optimistically in memory and in the
-    /// DB, on whichever article is relevant for the current screen: the
-    /// list selection, or (in the reader) the open article's own snapshot —
-    /// `selected`/`articles` can point elsewhere by the time you're reading
-    /// one, see `reader_article`'s doc comment.
-    pub fn toggle_saved_selected(&mut self) {
-        match self.screen {
-            Screen::Reader => {
-                let Some(article) = self.reader_article.as_mut() else {
-                    return;
-                };
-                article.saved = !article.saved;
-                let _ = self.db.set_saved(&article.link, article.saved);
-                let link = article.link.clone();
-                let saved = article.saved;
-                if let Some(row) = self.articles.iter_mut().find(|a| a.link == link) {
-                    row.saved = saved;
-                }
-            }
-            Screen::List => {
-                let Some(row_idx) = self.filtered.get(self.selected).copied() else {
-                    return;
-                };
-                let Some(row) = self.articles.get_mut(row_idx) else {
-                    return;
-                };
-                row.saved = !row.saved;
-                let _ = self.db.set_saved(&row.link, row.saved);
+    /// Toggles saved-for-later on the current article.
+    pub fn toggle_saved(&mut self) {
+        let Some(article) = self.current_article() else {
+            return;
+        };
+        let (link, saved) = (article.link.clone(), !article.saved);
+        let _ = self.db.set_saved(&link, saved);
+        self.update_article(&link, |a| a.saved = saved);
 
-                if self.filter == ListFilter::Saved && !row.saved {
-                    // Unsaving while viewing the Saved tab removes it from view.
-                    let link = row.link.clone();
-                    self.articles.retain(|a| a.link != link);
-                    self.apply_search();
-                }
-            }
+        // Unsaving in the Saved tab drops the row, unless it is being read.
+        let reading = self.screen == Screen::Reader || self.panel_focused;
+        if self.filter == ListFilter::Saved && !saved && !reading {
+            self.articles.retain(|a| a.link != link);
+            self.apply_search();
         }
     }
 
@@ -476,18 +464,12 @@ impl App {
 
     /// Flips read/unread on the current article, in memory and in the DB.
     pub fn toggle_read_current(&mut self) {
-        let Some(link) = self.current_link() else {
+        let Some((link, unread)) = self.current_article().map(|a| (a.link.clone(), !a.unread))
+        else {
             return;
         };
-        let Some(row) = self.articles.iter_mut().find(|a| a.link == link) else {
-            return;
-        };
-        row.unread = !row.unread;
-        let unread = row.unread;
-        if let Some(open) = self.reader_article.as_mut().filter(|a| a.link == link) {
-            open.unread = unread;
-        }
         let _ = self.db.set_unread(&link, unread);
+        self.update_article(&link, |a| a.unread = unread);
         self.refresh_counts();
         self.notice = Some(
             if unread {

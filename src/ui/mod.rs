@@ -733,4 +733,14 @@ mod tests {
         assert!(out.contains("open it in the browser"));
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn footer_hints_are_never_cut_off_at_any_width() {
+        let (app, path) = app_with(&[], "footer_widths");
+        for width in 30..=80 {
+            let out = dump(width, 20, &app);
+            assert!(out.contains("q quit"), "hint cut at width {width}:\n{out}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }

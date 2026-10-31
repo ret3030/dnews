@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 
 use super::{document, theme};
@@ -25,39 +25,46 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, panel: bool) {
         TEXT_WIDTH
     };
     let area = super::centered(area, text_width + SIDE_COLUMNS);
-    let header_lines = header_height(app, area.width);
-    let footer_lines = footer_hint_lines(app, panel, area.width).max(1);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_lines),
-            Constraint::Min(0),
-            Constraint::Length(footer_lines),
-        ])
-        .split(area);
-
-    render_header(f, app, chunks[0]);
-    render_body(f, app, chunks[1]);
-    render_footer(f, app, chunks[2], panel);
-}
-
-const MAX_TITLE_LINES: usize = 3;
-
-fn title_lines(app: &App, width: u16) -> Vec<String> {
     let title = app
         .reader_article
         .as_ref()
         .map(|a| a.title.as_str())
         .unwrap_or_default();
-    super::wrap_words(title, width.saturating_sub(4) as usize, MAX_TITLE_LINES)
+    let title = super::wrap_words(
+        title,
+        area.width.saturating_sub(4) as usize,
+        MAX_TITLE_LINES,
+    );
+    let footer = footer_lines(app, panel, area.width as usize);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            // Title lines, the meta line and the bottom rule.
+            Constraint::Length(title.len() as u16 + 2),
+            Constraint::Min(0),
+            Constraint::Length(footer.len() as u16),
+        ])
+        .split(area);
+
+    render_header(f, app, title, chunks[0]);
+    render_body(f, app, chunks[1]);
+    f.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(theme::PANEL)),
+        chunks[2],
+    );
+    if let Some(pct) = progress(app) {
+        let row = Rect {
+            height: 1,
+            ..chunks[2]
+        };
+        let pct = Line::styled(format!("{pct} "), Style::default().fg(theme::GRAY));
+        f.render_widget(Paragraph::new(pct.right_aligned()), row);
+    }
 }
 
-/// Title lines + meta line + bottom rule.
-fn header_height(app: &App, width: u16) -> u16 {
-    title_lines(app, width).len() as u16 + 2
-}
+const MAX_TITLE_LINES: usize = 3;
 
-fn render_header(f: &mut Frame, app: &App, area: Rect) {
+fn render_header(f: &mut Frame, app: &App, title: Vec<String>, area: Rect) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_type(BorderType::Plain)
@@ -84,7 +91,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let title_style = Style::default()
         .fg(theme::FG_BRIGHT)
         .add_modifier(Modifier::BOLD);
-    let mut lines: Vec<Line> = title_lines(app, area.width)
+    let mut lines: Vec<Line> = title
         .into_iter()
         .map(|l| Line::from(Span::styled(l, title_style)))
         .collect();
@@ -216,52 +223,31 @@ fn progress(app: &App) -> Option<String> {
     Some(format!("{}%", pos * 100 / max as usize))
 }
 
-fn footer_hint_lines(app: &App, panel: bool, width: u16) -> u16 {
-    if reader_has_focus(app, panel) && (app.notice.is_some() || !app.link_input.is_empty()) {
-        return 1;
-    }
-    let usable = width.saturating_sub(6) as usize;
-    super::wrap_hints(footer_hints(app, panel), "   ", usable).len() as u16
-}
-
-fn render_footer(f: &mut Frame, app: &App, area: Rect, panel: bool) {
-    let width = area.width.saturating_sub(1) as usize;
+fn footer_lines(app: &App, panel: bool, width: usize) -> Vec<Line<'static>> {
     let focus = reader_has_focus(app, panel);
     let accent = Style::default().fg(theme::ACCENT);
-
-    let mut lines: Vec<Line> = if focus && !app.link_input.is_empty() {
-        vec![Line::styled(
+    if focus && !app.link_input.is_empty() {
+        return vec![Line::styled(
             format!(" Open link {}: Enter   Esc cancel", app.link_input),
             accent,
-        )]
-    } else if let Some(notice) = app.notice.as_ref().filter(|_| focus) {
-        vec![Line::styled(
-            format!(" {}", super::truncate(notice, width.saturating_sub(1))),
-            accent,
-        )]
-    } else {
-        let style = Style::default().fg(if app.reader_loading {
-            theme::DIM
-        } else {
-            theme::GRAY
-        });
-        super::wrap_hints(footer_hints(app, panel), "   ", width.saturating_sub(5))
-            .into_iter()
-            .map(|l| Line::styled(format!(" {l}"), style))
-            .collect()
-    };
-    f.render_widget(
-        Paragraph::new(std::mem::take(&mut lines))
-            .style(Style::default().bg(theme::PANEL))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-
-    if let Some(pct) = progress(app) {
-        let pct = Line::styled(format!("{pct} "), Style::default().fg(theme::GRAY)).right_aligned();
-        let first_row = Rect { height: 1, ..area };
-        f.render_widget(Paragraph::new(pct), first_row);
+        )];
     }
+    if let Some(notice) = app.notice.as_ref().filter(|_| focus) {
+        return vec![Line::styled(
+            format!(" {}", super::truncate(notice, width.saturating_sub(2))),
+            accent,
+        )];
+    }
+    let color = if app.reader_loading {
+        theme::DIM
+    } else {
+        theme::GRAY
+    };
+    // Room on the right for the progress percentage.
+    super::wrap_hints(footer_hints(app, panel), "   ", width.saturating_sub(6))
+        .into_iter()
+        .map(|l| Line::styled(format!(" {l}"), Style::default().fg(color)))
+        .collect()
 }
 
 /// Whether keys currently go to the article (so its footer shows notices).

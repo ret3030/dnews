@@ -193,7 +193,7 @@ fn handle_list_wide(
     if app.panel_focused {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => app.unfocus_panel(),
-            KeyCode::Char('s') => app.toggle_saved_selected(),
+            KeyCode::Char('s') => app.toggle_saved(),
             _ => scroll_article(app, key),
         }
     } else {
@@ -220,7 +220,7 @@ fn handle_list_wide(
 /// `handle_list_wide`).
 fn scroll_list(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('s') => app.toggle_saved_selected(),
+        KeyCode::Char('s') => app.toggle_saved(),
         KeyCode::Char('M') => app.mark_all_read(),
         KeyCode::Char('c') => app.toggle_compact(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
@@ -236,7 +236,7 @@ fn scroll_list(app: &mut App, key: KeyEvent) {
 fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.close_reader(),
-        KeyCode::Char('s') => app.toggle_saved_selected(),
+        KeyCode::Char('s') => app.toggle_saved(),
         KeyCode::Char('J') => app.step_reader(1, reader_tx),
         KeyCode::Char('K') => app.step_reader(-1, reader_tx),
         _ => scroll_article(app, key),
@@ -946,5 +946,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.reader_scroll, 42);
+    }
+
+    #[tokio::test]
+    async fn s_in_the_focused_panel_saves_the_open_article_not_the_selection() {
+        let mut app = test_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            true,
+        )
+        .unwrap();
+        // Shift+J moves the selection; the preview has not loaded yet.
+        handle(
+            &mut app,
+            key(KeyCode::Char('J')),
+            &progress_tx,
+            &reader_tx,
+            true,
+        )
+        .unwrap();
+        assert_eq!(app.selected, 1);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('s')),
+            &progress_tx,
+            &reader_tx,
+            true,
+        )
+        .unwrap();
+        assert!(app.reader_article.as_ref().unwrap().saved);
+        assert!(app.articles[0].saved, "the open article's row is saved too");
+        assert!(
+            !app.articles[1].saved,
+            "the merely selected row is untouched"
+        );
     }
 }
