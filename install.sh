@@ -29,6 +29,9 @@ else
 fi
 
 mkdir -p "$BIN_DIR"
+# Replace, not overwrite: macOS kills a binary rewritten in place, because it
+# keeps the old code signature cached for the file.
+rm -f "$BIN_DIR/$BIN_NAME"
 cp "target/release/$BIN_NAME" "$BIN_DIR/$BIN_NAME"
 echo "Installed: $BIN_DIR/$BIN_NAME"
 
