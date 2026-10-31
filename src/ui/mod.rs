@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Screen};
+use crate::store::ListFilter;
 
 /// From this terminal width the list and the article sit side by side;
 /// below it the article opens full screen.
@@ -49,7 +50,12 @@ pub fn draw(f: &mut Frame, app: &App) {
                 ])
                 .split(inner);
             list::draw(f, app, cols[0], true);
-            article::draw(f, app, cols[2], true);
+            // Browsing the Briefing, the right side shows the selected story.
+            if app.filter == ListFilter::Briefing && app.story.is_none() && !app.panel_focused {
+                briefing::draw_card(f, app, cols[2]);
+            } else {
+                article::draw(f, app, cols[2], true);
+            }
         }
         Screen::List => list::draw(f, app, inner, false),
     }
@@ -885,37 +891,24 @@ mod tests {
         println!("{out}");
         assert!(out.contains("Briefing"));
         assert!(out.contains("Since "), "window line");
-        assert!(
-            out.contains("outlets · "),
-            "story rows lead with their outlet count"
-        );
-        assert!(
-            !out.contains('▸') && !out.contains('▾'),
-            "no triangle markers"
-        );
-        // The category with the biggest story comes first.
-        assert!(
-            out.find("Svět").unwrap() < out.find("Zprávy ČR ─").unwrap(),
-            "{out}"
-        );
-        // Only the selected story shows its summary.
-        let summary_of = |s: usize| {
-            let head = &app.articles[app.stories[s].head];
-            head.summary
-                .split_whitespace()
-                .take(4)
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let crate::app::BriefingRow::Story(first) = app.briefing_rows[0].clone() else {
-            panic!("the Briefing starts with a story");
-        };
-        let crate::app::BriefingRow::Story(second) = app.briefing_rows[1].clone() else {
-            panic!("then another story");
-        };
-        assert!(out.contains(&summary_of(first)));
-        assert!(!out.contains(&summary_of(second)));
-        assert!(out.contains("more stories in") || out.contains("more story in"));
+        assert!(out.contains("Top stories"), "{out}");
+        assert!(out.contains(" 1 ") && out.contains("outlets"), "{out}");
+        // No summaries in the list: one headline per story.
+        let first = &app.articles[app.stories[app.briefing_rows[0]].head];
+        let summary: String = first
+            .summary
+            .split_whitespace()
+            .take(5)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(summary.is_empty() || !out.contains(&summary), "{out}");
+
+        // An open story shows its summary and its articles.
+        app.open_story(app.briefing_rows[0]);
+        let out = dump(110, 46, &app);
+        assert!(out.contains("Articles"), "{out}");
+        assert!(out.contains("updated"), "{out}");
+        app.close_story();
 
         // The reader names the other outlets.
         app.set_filter(crate::store::ListFilter::All).unwrap();
@@ -935,6 +928,31 @@ mod tests {
         app.reader_article = app.selected_article().cloned();
         let out = dump(110, 30, &app);
         assert!(out.contains("Also covered by"), "{out}");
+    }
+
+    #[test]
+    fn the_wide_briefing_shows_the_selected_story_on_the_right() {
+        let mut app = crate::keys::tests::briefing_app();
+        let width = super::SPLIT_MIN_WIDTH + 20;
+        // Text that only the right side shows: an outlet's own headline.
+        let other_headline = |app: &App, row: usize| {
+            let story = &app.stories[app.briefing_rows[row]];
+            let other = story.members.iter().find(|&&m| m != story.head).unwrap();
+            let title = &app.articles[*other].title;
+            super::truncate(title, 20).trim_end_matches('…').to_string()
+        };
+        app.selected = 1;
+        let out = dump(width, 40, &app);
+        assert!(out.contains("Articles"), "{out}");
+        assert!(out.contains(&other_headline(&app, 1)), "{out}");
+        assert!(!out.contains(&other_headline(&app, 0)), "{out}");
+
+        app.selected = 0;
+        let out = dump(width, 40, &app);
+        assert!(
+            out.contains(&other_headline(&app, 0)),
+            "the card follows the cursor"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::app::{App, BriefingRow, Overlay, ReaderEvent, Screen};
+use crate::app::{App, Overlay, ReaderEvent, Screen};
 use crate::feed::fetch::FetchEvent;
 use crate::store::ListFilter;
 
@@ -113,16 +113,18 @@ fn handle_list(
         return Ok(());
     }
 
-    // In the Briefing, Enter on a story expands it and on "+ N more" opens
-    // that category; on an article it reads it like anywhere else.
-    if app.filter == ListFilter::Briefing && key.code == KeyCode::Enter && !app.panel_focused {
-        match app.briefing_rows.get(app.selected).cloned() {
-            Some(BriefingRow::Story(story)) => {
-                app.toggle_story(story);
+    // In the Briefing, Enter on a story lists its articles and q/Esc goes
+    // back; those articles read like any list.
+    if app.filter == ListFilter::Briefing && !app.panel_focused {
+        match (app.story, key.code) {
+            (None, KeyCode::Enter) => {
+                if let Some(&story) = app.briefing_rows.get(app.selected) {
+                    app.open_story(story);
+                }
                 return Ok(());
             }
-            Some(BriefingRow::More(category, _)) => {
-                app.set_filter(ListFilter::Category(category))?;
+            (Some(_), KeyCode::Char('q') | KeyCode::Esc) => {
+                app.close_story();
                 return Ok(());
             }
             _ => {}
@@ -137,7 +139,11 @@ fn handle_list(
                 } else {
                     -1
                 });
-                app.schedule_preview();
+                // In the Briefing itself the story card follows the cursor;
+                // previewing would fetch the headline and mark it read.
+                if !(app.filter == ListFilter::Briefing && app.story.is_none()) {
+                    app.schedule_preview();
+                }
                 return Ok(());
             }
             KeyCode::Enter => {
@@ -174,7 +180,9 @@ fn handle_list(
         }
         KeyCode::Tab => app.cycle_filter(1)?,
         KeyCode::BackTab => app.cycle_filter(-1)?,
-        KeyCode::Char('M') if app.filter == ListFilter::Briefing => app.finish_briefing()?,
+        KeyCode::Char('M') if app.filter == ListFilter::Briefing && app.story.is_none() => {
+            app.finish_briefing()?
+        }
         _ => scroll_list(app, key),
     }
     Ok(())
@@ -1011,181 +1019,140 @@ pub(crate) mod tests {
         app
     }
 
-    fn row_of(app: &App, wanted: impl Fn(&BriefingRow) -> bool) -> usize {
-        app.briefing_rows
-            .iter()
-            .position(wanted)
-            .expect("no such Briefing row")
-    }
-
-    #[tokio::test]
-    async fn the_briefing_groups_stories_and_expands_them() {
-        let mut app = briefing_app();
+    fn press(app: &mut App, code: KeyCode) {
         let (progress_tx, _p) = mpsc::unbounded_channel();
         let (reader_tx, _r) = mpsc::unbounded_channel();
+        handle(app, key(code), &progress_tx, &reader_tx, false).unwrap();
+    }
+
+    #[test]
+    fn the_briefing_leads_with_top_stories_then_each_category() {
+        let app = briefing_app();
         assert_eq!(
             app.filter,
             ListFilter::Briefing,
             "the app opens on the Briefing"
         );
+        let rows = &app.briefing_rows;
+        let top = &rows[..app.briefing_top];
+        assert_eq!(top.len(), 5);
+        assert!(top.iter().all(|&s| app.stories[s].sources > 1));
+        assert!(
+            top.windows(2)
+                .all(|w| app.stories[w[0]].score >= app.stories[w[1]].score),
+            "best first"
+        );
+        let mut seen = rows.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), rows.len(), "no story shows twice");
 
-        // Poland's court story is there, with all its outlets.
+        // Below the top, categories follow the feed list, a few stories each.
+        let order: Vec<&str> = rows[app.briefing_top..]
+            .iter()
+            .map(|&s| app.stories[s].category.as_str())
+            .collect();
+        let mut expected: Vec<&str> = app.categories.iter().map(String::as_str).collect();
+        expected.retain(|c| order.contains(c));
+        let mut sections = order.clone();
+        sections.dedup();
+        assert_eq!(sections, expected, "one block per category, in order");
+        for category in sections {
+            let n = order.iter().filter(|c| **c == category).count();
+            assert!((1..=5).contains(&n), "{category}: {n} stories");
+        }
+        assert_eq!(app.filtered.len(), rows.len(), "a list row per story");
+    }
+
+    #[tokio::test]
+    async fn enter_opens_a_story_and_q_goes_back_to_it() {
+        let mut app = briefing_app();
         let poland = (0..app.stories.len())
             .find(|&s| {
-                app.stories[s].members.iter().any(|&m| {
-                    app.articles[m]
-                        .title
-                        .contains("Poland’s constitutional court")
-                })
+                let head = &app.articles[app.stories[s].head];
+                head.title.contains("Poland’s constitutional court")
             })
             .unwrap();
-        assert!(app.stories[poland].sources >= 5);
-        app.selected = row_of(&app, |r| *r == BriefingRow::Story(poland));
+        app.selected = app.briefing_rows.iter().position(|&s| s == poland).unwrap();
+        let row = app.selected;
 
-        handle(
-            &mut app,
-            key(KeyCode::Enter),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
-        let members = app.stories[poland].members.len();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.story, Some(poland));
+        let members = &app.stories[poland].members;
         assert_eq!(
-            app.briefing_rows
-                .iter()
-                .filter(|r| **r == BriefingRow::Member(poland))
-                .count(),
-            members,
-            "Enter lists every article of the story"
+            app.filtered.len(),
+            members.len(),
+            "every article of the story"
+        );
+        assert!(
+            app.filtered
+                .windows(2)
+                .all(|w| app.articles[w[0]].published >= app.articles[w[1]].published),
+            "newest first"
         );
 
-        // Enter on one of them reads it.
-        app.selected += 1;
-        handle(
-            &mut app,
-            key(KeyCode::Enter),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
+        // Enter reads an article; q returns to the story, q again to the Briefing.
+        app.selected = 1;
+        let wanted = app.selected_article().unwrap().link.clone();
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.screen, Screen::Reader);
-        let opened = app.reader_article.as_ref().unwrap().link.clone();
-        assert!(
-            app.stories[poland]
-                .members
-                .iter()
-                .any(|&m| app.articles[m].link == opened)
-        );
+        assert_eq!(app.reader_article.as_ref().unwrap().link, wanted);
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!((app.screen, app.story), (Screen::List, Some(poland)));
 
-        // Back in the list, Enter on the story collapses it again.
-        handle(
-            &mut app,
-            key(KeyCode::Char('q')),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
-        app.selected = row_of(&app, |r| *r == BriefingRow::Story(poland));
-        handle(
-            &mut app,
-            key(KeyCode::Enter),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
-        assert!(!app.briefing_rows.contains(&BriefingRow::Member(poland)));
+        // M inside a story marks just its articles; the Briefing stays open.
+        let since = app.briefing_since;
+        press(&mut app, KeyCode::Char('M'));
+        assert!(app.filtered.iter().all(|&i| !app.articles[i].unread));
+        assert!(app.unread_count > 0);
+        assert_eq!(app.db.setting("briefing_done").unwrap(), None);
+        assert_eq!(app.briefing_since, since);
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.story, None);
+        assert_eq!(app.selected, row, "the cursor is back on the story");
     }
 
     #[test]
-    fn more_opens_the_category_and_each_category_shows_a_few_stories() {
+    fn shift_j_in_the_wide_briefing_moves_without_fetching_or_marking_read() {
         let mut app = briefing_app();
+        let unread = app.unread_count;
         let (progress_tx, _p) = mpsc::unbounded_channel();
         let (reader_tx, _r) = mpsc::unbounded_channel();
-        for category in app.categories.clone() {
-            let shown = app
-                .briefing_rows
-                .iter()
-                .filter(
-                    |r| matches!(r, BriefingRow::Story(s) if app.stories[*s].category == category),
-                )
-                .count();
-            assert!((1..=5).contains(&shown), "{category}: {shown} stories");
-        }
-        let more = row_of(
-            &app,
-            |r| matches!(r, BriefingRow::More(c, _) if c == "Svět"),
-        );
-        app.selected = more;
-        assert!(
-            app.selected_article().is_none(),
-            "a more row is not an article"
-        );
         handle(
             &mut app,
-            key(KeyCode::Enter),
+            key(KeyCode::Char('J')),
             &progress_tx,
             &reader_tx,
-            false,
+            true,
         )
         .unwrap();
-        assert_eq!(app.filter, ListFilter::Category("Svět".into()));
-    }
-
-    /// Whether every story row belongs to the finished Briefing.
-    fn all_finished(app: &App) -> bool {
-        app.briefing_rows.iter().all(|r| match r {
-            BriefingRow::Story(s) | BriefingRow::Member(s) => {
-                app.stories[*s].newest <= app.briefing_since
-            }
-            BriefingRow::More(..) => false,
-        })
+        assert_eq!(app.selected, 1);
+        assert!(
+            app.preview_due_at.is_none(),
+            "the story card needs no fetch"
+        );
+        assert_eq!(app.unread_count, unread);
     }
 
     #[test]
-    fn capital_m_finishes_the_briefing_but_keeps_it_visible() {
+    fn capital_m_finishes_the_briefing() {
         let mut app = briefing_app();
-        let (progress_tx, _p) = mpsc::unbounded_channel();
-        let (reader_tx, _r) = mpsc::unbounded_channel();
-        let before = app.briefing_rows.len();
-        assert!(before > 0 && !all_finished(&app));
+        assert!(!app.briefing_rows.is_empty());
 
-        handle(
-            &mut app,
-            key(KeyCode::Char('M')),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
+        press(&mut app, KeyCode::Char('M'));
         assert_eq!(app.unread_count, 0, "everything in it is read");
         assert_eq!(app.briefing_new, 0);
-        assert!(
-            !app.briefing_rows.is_empty(),
-            "the finished Briefing stays visible"
-        );
-        assert!(all_finished(&app));
+        assert!(app.briefing_rows.is_empty(), "nothing new to show");
 
-        // A second M with nothing new changes nothing (it used to empty the
-        // Briefing by finishing the seconds between the two presses).
-        let rows = app.briefing_rows.clone();
+        // A second M with nothing new changes nothing (it used to finish
+        // the seconds between the two presses).
         let done = app.db.setting("briefing_done").unwrap();
-        handle(
-            &mut app,
-            key(KeyCode::Char('M')),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
-        assert_eq!(app.briefing_rows, rows);
+        press(&mut app, KeyCode::Char('M'));
         assert_eq!(app.db.setting("briefing_done").unwrap(), done);
         assert_eq!(app.notice.as_deref(), Some("Nothing new to finish"));
 
-        // Something new arrives: it comes first, the finished part after it.
+        // Something new arrives and shows up.
         let now = chrono::Utc::now().timestamp();
         app.db
             .upsert_batch(&[NewArticle {
@@ -1199,15 +1166,13 @@ pub(crate) mod tests {
             .unwrap();
         app.reload_view().unwrap();
         assert_eq!(app.briefing_new, 1);
+        assert_eq!(app.filtered.len(), 1);
         assert!(app.articles[app.filtered[0]].title.starts_with("Volcano"));
-        assert!(!all_finished(&app));
     }
 
     #[tokio::test]
-    async fn b_in_the_reader_shows_the_articles_story() {
+    async fn b_in_the_reader_opens_the_articles_story() {
         let mut app = briefing_app();
-        let (progress_tx, _p) = mpsc::unbounded_channel();
-        let (reader_tx, _r) = mpsc::unbounded_channel();
         app.set_filter(ListFilter::All).unwrap();
         app.selected = app
             .filtered
@@ -1219,29 +1184,12 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert!(app.coverage[&app.articles[app.filtered[app.selected]].link].len() >= 5);
-        handle(
-            &mut app,
-            key(KeyCode::Enter),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('b'));
 
-        handle(
-            &mut app,
-            key(KeyCode::Char('b')),
-            &progress_tx,
-            &reader_tx,
-            false,
-        )
-        .unwrap();
         assert_eq!(app.screen, Screen::List);
         assert_eq!(app.filter, ListFilter::Briefing);
-        assert!(matches!(
-            app.briefing_rows[app.selected],
-            BriefingRow::Member(_)
-        ));
+        assert!(app.story.is_some());
         assert!(
             app.selected_article()
                 .unwrap()

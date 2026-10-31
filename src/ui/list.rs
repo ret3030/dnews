@@ -268,9 +268,9 @@ fn article_item(row: &ArticleRow, width: usize, compact: bool, others: usize) ->
     ListItem::new(Text::from(lines))
 }
 
-pub(super) fn separator_item(label: &str, width: usize) -> ListItem<'static> {
+pub(super) fn separator_line(label: &str, width: usize) -> Line<'static> {
     let rule = "─".repeat(width.saturating_sub(label.width() + 3));
-    ListItem::new(Line::from(vec![
+    Line::from(vec![
         Span::styled(
             format!(" {label} "),
             Style::default()
@@ -278,7 +278,7 @@ pub(super) fn separator_item(label: &str, width: usize) -> ListItem<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(rule, Style::default().fg(theme::BORDER)),
-    ]))
+    ])
 }
 
 /// Article entries under day headings. Only articles that can be on screen
@@ -302,7 +302,7 @@ fn article_items(app: &App, width: usize, height: usize) -> (Vec<ListItem<'stati
         };
         let day = day_label(row.published, today);
         if last_day.as_ref() != Some(&day) {
-            items.push(separator_item(&day, width));
+            items.push(ListItem::new(separator_line(&day, width)));
             last_day = Some(day);
         }
         if pos == app.selected {
@@ -378,8 +378,17 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 
 /// Key hints for the footer when nothing else is shown there.
 fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
-    if app.filter == ListFilter::Briefing && !app.panel_focused {
-        &["↵ open", "M done reading", "Tab tabs", "? help", "q quit"]
+    let briefing = app.filter == ListFilter::Briefing && !app.panel_focused;
+    if briefing && app.story.is_some() {
+        &["↵ read", "q back to the Briefing", "? help"]
+    } else if briefing {
+        &[
+            "↵ open story",
+            "M done reading",
+            "Tab tabs",
+            "? help",
+            "q quit",
+        ]
     } else if !split {
         &["↵ read", "/ search", "Tab tabs", "? help", "q quit"]
     } else if app.panel_focused {

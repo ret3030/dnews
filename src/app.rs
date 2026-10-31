@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -29,26 +29,14 @@ pub enum ReaderEvent {
     Failed(String, String),
 }
 
-/// One selectable line of the Briefing. Rows map 1:1 onto `App::filtered`,
-/// so selection, the reader and article actions work as in any list.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum BriefingRow {
-    /// A story, standing in for its headline article.
-    Story(usize),
-    /// One article of an expanded story.
-    Member(usize),
-    /// "+ N more stories" for a category; Enter opens its tab.
-    More(String, usize),
-}
-
-/// The Briefing shows at most this many multi-outlet stories per category,
+/// The Briefing leads with this many top stories across all categories.
+const BRIEFING_TOP: usize = 5;
+/// Below them, each category shows at most this many multi-outlet stories,
 /// and at least this many stories of any size.
 const BRIEFING_MAX_PER_CATEGORY: usize = 5;
 const BRIEFING_MIN_PER_CATEGORY: usize = 2;
-/// When the Briefing was last finished with `M`, and where that finished
-/// Briefing started (shown greyed out until something new comes in).
+/// When the Briefing was last finished with `M`.
 const BRIEFING_DONE_KEY: &str = "briefing_done";
-const BRIEFING_PREVIOUS_KEY: &str = "briefing_previous";
 
 /// A modal panel drawn over the current screen; any key closes it.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -111,15 +99,17 @@ pub struct App {
     /// When the main loop should load the selection into the panel.
     pub preview_due_at: Option<std::time::Instant>,
 
-    /// Briefing tab: stories over `articles`, the rows on screen, and which
-    /// stories are expanded.
+    /// Briefing tab: stories over `articles`, and the ones on screen (top
+    /// stories first, `briefing_top` of them). Without an open story, row
+    /// `i` of the list is story `briefing_rows[i]` and `filtered[i]` its
+    /// headline article.
     pub stories: Vec<Story>,
-    pub briefing_rows: Vec<BriefingRow>,
-    pub expanded: HashSet<usize>,
+    pub briefing_rows: Vec<usize>,
+    pub briefing_top: usize,
+    /// The story opened with Enter: the list shows its articles instead.
+    pub story: Option<usize>,
     /// Stories with nothing newer than this were already read through (`M`).
     pub briefing_since: i64,
-    /// Start of the last finished Briefing, if it is still within reach.
-    pub briefing_previous: Option<i64>,
     /// Articles published since `briefing_since`.
     pub briefing_new: usize,
     /// The outlets covering an article's story, for stories with two or
@@ -175,9 +165,9 @@ impl App {
             preview_due_at: None,
             stories: Vec::new(),
             briefing_rows: Vec::new(),
-            expanded: HashSet::new(),
+            briefing_top: 0,
+            story: None,
             briefing_since: 0,
-            briefing_previous: None,
             briefing_new: 0,
             coverage: HashMap::new(),
             should_quit: false,
@@ -202,9 +192,15 @@ impl App {
     }
 
     pub fn reload_view(&mut self) -> Result<()> {
+        // Clustering numbers the stories afresh, so the open one is found
+        // again by its headline article.
+        let open = self
+            .story
+            .map(|s| self.articles[self.stories[s].head].link.clone());
         self.articles = self.db.list(&self.filter)?;
         if self.filter == ListFilter::Briefing {
             (self.stories, self.coverage) = recent_stories(&self.articles, &self.feeds);
+            self.story = open.and_then(|link| self.story_of(&link));
             self.build_briefing();
         } else {
             self.apply_search();
@@ -213,96 +209,68 @@ impl App {
         Ok(())
     }
 
-    /// Lays out the Briefing: what is new since it was last finished, then
-    /// that finished Briefing (read, so greyed out) below it.
+    /// Lays out the Briefing: the stories with something new since it was
+    /// last finished, or the open story's articles, newest first.
     pub fn build_briefing(&mut self) {
-        let setting = |key| {
-            self.db
-                .setting(key)
-                .ok()
-                .flatten()
-                .and_then(|s| s.parse::<i64>().ok())
-        };
         let oldest = chrono::Utc::now().timestamp() - crate::store::BRIEFING_WINDOW_SECS;
-        self.briefing_since = setting(BRIEFING_DONE_KEY).unwrap_or(0).max(oldest);
-        self.briefing_previous = setting(BRIEFING_PREVIOUS_KEY)
-            .map(|p| p.max(oldest))
-            .filter(|&p| p < self.briefing_since);
+        let done = self.db.setting(BRIEFING_DONE_KEY).ok().flatten();
+        self.briefing_since = done.and_then(|d| d.parse().ok()).unwrap_or(0).max(oldest);
         self.briefing_new = self
             .articles
             .iter()
             .filter(|a| a.published > self.briefing_since)
             .count();
+        (self.briefing_rows, self.briefing_top) =
+            briefing_rows(&self.stories, &self.categories, self.briefing_since);
 
-        self.briefing_rows.clear();
-        self.filtered.clear();
-        self.push_briefing_section(self.briefing_since, i64::MAX, true);
-        if let Some(previous) = self.briefing_previous {
-            self.push_briefing_section(previous, self.briefing_since, false);
-        }
+        self.filtered = match self.story {
+            Some(story) => {
+                let mut members = self.stories[story].members.clone();
+                members.sort_by_key(|&m| std::cmp::Reverse(self.articles[m].published));
+                members
+            }
+            None => self
+                .briefing_rows
+                .iter()
+                .map(|&s| self.stories[s].head)
+                .collect(),
+        };
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
-    /// Rows for the stories whose newest article falls in `(from, to]`: per
-    /// category, widely covered ones first, and optionally a "more" row.
-    fn push_briefing_section(&mut self, from: i64, to: i64, with_more: bool) {
-        let stories = &self.stories;
-        // Per category, its stories in the window; `stories` is best first.
-        let mut sections: Vec<(&String, Vec<usize>)> = self
-            .categories
-            .iter()
-            .map(|category| {
-                let fresh = (0..stories.len())
-                    .filter(|&s| {
-                        let newest = stories[s].newest;
-                        stories[s].category == *category && newest > from && newest <= to
-                    })
-                    .collect();
-                (category, fresh)
-            })
-            .filter(|(_, fresh): &(&String, Vec<usize>)| !fresh.is_empty())
-            .collect();
-        // The category with the biggest story comes first.
-        sections.sort_by(|a, b| stories[b.1[0]].score.total_cmp(&stories[a.1[0]].score));
-
-        for (category, fresh) in sections {
-            let shown = pick_stories(stories, &fresh);
-            for &s in &shown {
-                self.briefing_rows.push(BriefingRow::Story(s));
-                self.filtered.push(stories[s].head);
-                if self.expanded.contains(&s) {
-                    for &m in &stories[s].members {
-                        self.briefing_rows.push(BriefingRow::Member(s));
-                        self.filtered.push(m);
-                    }
-                }
-            }
-            let hidden = fresh.iter().find(|s| !shown.contains(s));
-            if let Some(&hidden) = hidden.filter(|_| with_more) {
-                let rest = fresh.len() - shown.len();
-                self.briefing_rows
-                    .push(BriefingRow::More(category.clone(), rest));
-                self.filtered.push(stories[hidden].head);
-            }
-        }
+    /// The story an article belongs to.
+    fn story_of(&self, link: &str) -> Option<usize> {
+        (0..self.stories.len()).find(|&s| {
+            self.stories[s]
+                .members
+                .iter()
+                .any(|&m| self.articles[m].link == link)
+        })
     }
 
-    /// Expands or collapses a story, keeping the cursor on it.
-    pub fn toggle_story(&mut self, story: usize) {
-        if !self.expanded.remove(&story) {
-            self.expanded.insert(story);
-        }
+    /// Enter on a story in the Briefing: the list shows its articles.
+    pub fn open_story(&mut self, story: usize) {
+        self.story = Some(story);
+        self.selected = 0;
+        self.build_briefing();
+    }
+
+    /// Back from a story to the Briefing, with the cursor on that story.
+    pub fn close_story(&mut self) {
+        let Some(story) = self.story.take() else {
+            return;
+        };
+        self.close_article();
         self.build_briefing();
         self.selected = self
             .briefing_rows
             .iter()
-            .position(|r| *r == BriefingRow::Story(story))
+            .position(|&s| s == story)
             .unwrap_or(0);
     }
 
     /// `M` in the Briefing: everything in it is read, and the next Briefing
-    /// starts from now. This one stays below it, greyed out. With nothing
-    /// new it does nothing, so the finished Briefing stays as it was.
+    /// starts from now. With nothing new it does nothing.
     pub fn finish_briefing(&mut self) -> Result<()> {
         if self.briefing_new == 0 {
             self.notice = Some("Nothing new to finish".into());
@@ -316,18 +284,16 @@ impl App {
             .collect();
         self.db.mark_read_many(&links)?;
         let now = chrono::Utc::now().timestamp();
-        self.db
-            .set_setting(BRIEFING_PREVIOUS_KEY, &self.briefing_since.to_string())?;
         self.db.set_setting(BRIEFING_DONE_KEY, &now.to_string())?;
-        self.expanded.clear();
+        self.story = None;
         self.selected = 0;
         self.reload_view()?;
         self.notice = Some("Briefing done. The next one starts from now.".into());
         Ok(())
     }
 
-    /// `b` in the reader: shows the open article's story in the Briefing,
-    /// expanded, with the cursor on the article.
+    /// `b` in the reader: opens the article's story in the Briefing, with
+    /// the cursor on the article.
     pub fn show_story(&mut self) -> Result<()> {
         let Some(link) = self.current_link() else {
             return Ok(());
@@ -336,26 +302,14 @@ impl App {
         self.screen = Screen::List;
         self.panel_focused = false;
         self.set_filter(ListFilter::Briefing)?;
-        let story = (0..self.stories.len()).find(|&s| {
-            self.stories[s]
-                .members
-                .iter()
-                .any(|&m| self.articles[m].link == link)
-        });
-        let Some(story) = story else {
+        let Some(story) = self.story_of(&link) else {
             self.notice = Some("This article is not in the Briefing".into());
             return Ok(());
         };
-        self.expanded.insert(story);
-        self.build_briefing();
-        let row = (0..self.filtered.len()).find(|&i| {
-            self.briefing_rows[i] == BriefingRow::Member(story)
-                && self.articles[self.filtered[i]].link == link
-        });
-        match row {
-            Some(row) => self.selected = row,
-            None => self.notice = Some("Its story has nothing new since the last Briefing".into()),
-        }
+        self.open_story(story);
+        self.selected = (0..self.filtered.len())
+            .find(|&i| self.articles[self.filtered[i]].link == link)
+            .unwrap_or(0);
         Ok(())
     }
 
@@ -440,6 +394,7 @@ impl App {
 
     pub fn set_filter(&mut self, filter: ListFilter) -> Result<()> {
         self.filter = filter;
+        self.story = None;
         self.selected = 0;
         self.reload_view()
     }
@@ -568,15 +523,6 @@ impl App {
     }
 
     pub fn selected_article(&self) -> Option<&ArticleRow> {
-        // A "more" row in the Briefing stands for a tab, not an article.
-        if self.filter == ListFilter::Briefing
-            && matches!(
-                self.briefing_rows.get(self.selected),
-                Some(BriefingRow::More(..))
-            )
-        {
-            return None;
-        }
         self.filtered
             .get(self.selected)
             .and_then(|&i| self.articles.get(i))
@@ -690,6 +636,33 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// The Briefing's stories among those with something new since `since`:
+/// the `BRIEFING_TOP` best covered by two or more outlets, then each
+/// category's best others, in feed-list order. Also returns how many lead
+/// as top stories.
+fn briefing_rows(stories: &[Story], categories: &[String], since: i64) -> (Vec<usize>, usize) {
+    // `stories` is best first, so every list below is too.
+    let fresh: Vec<usize> = (0..stories.len())
+        .filter(|&s| stories[s].newest > since)
+        .collect();
+    let mut rows: Vec<usize> = fresh
+        .iter()
+        .copied()
+        .filter(|&s| stories[s].sources > 1)
+        .take(BRIEFING_TOP)
+        .collect();
+    let top = rows.len();
+    for category in categories {
+        let rest: Vec<usize> = fresh
+            .iter()
+            .copied()
+            .filter(|&s| stories[s].category == *category && !rows[..top].contains(&s))
+            .collect();
+        rows.extend(pick_stories(stories, &rest));
+    }
+    (rows, top)
 }
 
 /// Which of a category's `fresh` stories (best first) the Briefing shows:

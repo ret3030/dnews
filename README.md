@@ -5,9 +5,10 @@ stories, and shows any article as clean, readable text.
 
 ![dnews](docs/screenshot.png)
 
-- **Briefing:** the last two days as stories, not headlines. An event covered by eight outlets is
-  one row, so the important news stands out. Press `M` when you are done and the next Briefing
-  shows only what is new.
+- **Briefing:** the last two days as stories, not headlines. The five most covered stories lead,
+  then the best of each folder, one row each. An event covered by eight outlets is one row; open
+  it to see every outlet's article. Press `M` when you are done and the next Briefing shows only
+  what is new.
 - **Reader:** articles without the website around them, with headings, quotes, lists and links.
 - **One file to configure:** your feeds live in an OPML file; each folder is a tab.
 
@@ -65,9 +66,10 @@ Press `?` in dnews for this list.
 
 | Briefing | |
 |---|---|
-| `Enter` | expand a story, read an article |
+| `Enter` | open a story, read an article |
+| `q` `Esc` | back from a story |
 | `M` | done reading: mark it all read |
-| `b` | in an article: back to its story |
+| `b` | in an article: open its story |
 
 | List | |
 |---|---|
