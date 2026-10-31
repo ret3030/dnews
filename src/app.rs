@@ -50,13 +50,6 @@ const BRIEFING_MIN_PER_CATEGORY: usize = 2;
 const BRIEFING_DONE_KEY: &str = "briefing_done";
 const BRIEFING_PREVIOUS_KEY: &str = "briefing_previous";
 
-/// What the last `M` changed, so `U` can put it back.
-pub struct FinishedBriefing {
-    links: Vec<String>,
-    done: Option<String>,
-    previous: Option<String>,
-}
-
 /// A modal panel drawn over the current screen; any key closes it.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Overlay {
@@ -127,7 +120,6 @@ pub struct App {
     pub briefing_since: i64,
     /// Start of the last finished Briefing, if it is still within reach.
     pub briefing_previous: Option<i64>,
-    pub undo_finish: Option<FinishedBriefing>,
     /// Articles published since `briefing_since`.
     pub briefing_new: usize,
     /// The outlets covering an article's story, for stories with two or
@@ -186,7 +178,6 @@ impl App {
             expanded: HashSet::new(),
             briefing_since: 0,
             briefing_previous: None,
-            undo_finish: None,
             briefing_new: 0,
             coverage: HashMap::new(),
             should_quit: false,
@@ -299,20 +290,20 @@ impl App {
     }
 
     /// `M` in the Briefing: everything in it is read, and the next Briefing
-    /// starts from now. This one stays below it, greyed out.
+    /// starts from now. This one stays below it, greyed out. With nothing
+    /// new it does nothing, so the finished Briefing stays as it was.
     pub fn finish_briefing(&mut self) -> Result<()> {
+        if self.briefing_new == 0 {
+            self.notice = Some("Nothing new to finish".into());
+            return Ok(());
+        }
         let links: Vec<String> = self
             .articles
             .iter()
             .filter(|a| a.published > self.briefing_since && a.unread)
             .map(|a| a.link.clone())
             .collect();
-        self.db.set_unread_many(&links, false)?;
-        self.undo_finish = Some(FinishedBriefing {
-            links,
-            done: self.db.setting(BRIEFING_DONE_KEY)?,
-            previous: self.db.setting(BRIEFING_PREVIOUS_KEY)?,
-        });
+        self.db.mark_read_many(&links)?;
         let now = chrono::Utc::now().timestamp();
         self.db
             .set_setting(BRIEFING_PREVIOUS_KEY, &self.briefing_since.to_string())?;
@@ -320,28 +311,7 @@ impl App {
         self.expanded.clear();
         self.selected = 0;
         self.reload_view()?;
-        self.notice = Some("Briefing done. U undoes it.".into());
-        Ok(())
-    }
-
-    /// `U`: takes back the last `M`, unread flags included.
-    pub fn undo_finish_briefing(&mut self) -> Result<()> {
-        let Some(finished) = self.undo_finish.take() else {
-            self.notice = Some("Nothing to undo".into());
-            return Ok(());
-        };
-        self.db.set_unread_many(&finished.links, true)?;
-        for (key, value) in [
-            (BRIEFING_DONE_KEY, finished.done),
-            (BRIEFING_PREVIOUS_KEY, finished.previous),
-        ] {
-            match value {
-                Some(value) => self.db.set_setting(key, &value)?,
-                None => self.db.remove_setting(key)?,
-            }
-        }
-        self.reload_view()?;
-        self.notice = Some("Briefing restored".into());
+        self.notice = Some("Briefing done. The next one starts from now.".into());
         Ok(())
     }
 
@@ -645,7 +615,7 @@ impl App {
         if links.is_empty() {
             return;
         }
-        let _ = self.db.set_unread_many(&links, false);
+        let _ = self.db.mark_read_many(&links);
         for &i in &self.filtered {
             if let Some(a) = self.articles.get_mut(i) {
                 a.unread = false;
