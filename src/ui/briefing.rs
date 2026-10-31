@@ -10,6 +10,9 @@ use crate::app::{App, BriefingRow};
 
 /// Columns before a story's text: marker and space.
 const INDENT: usize = 4;
+/// The selected story's summary wraps at this width at most, so it reads as
+/// a short paragraph rather than a block running to the pane's edge.
+const SUMMARY_W: usize = 72;
 /// Source column of an expanded story's articles.
 const SOURCE_W: usize = 18;
 
@@ -51,7 +54,13 @@ pub fn items(app: &App, width: usize) -> (Vec<ListItem<'static>>, usize) {
             .get(row_index)
             .and_then(|&i| app.articles.get(i));
         items.push(match (row, article) {
-            (BriefingRow::Story(s), _) => story_item(app, *s, width, !first_in_category),
+            (BriefingRow::Story(s), _) => story_item(
+                app,
+                *s,
+                width,
+                !first_in_category,
+                row_index == app.selected,
+            ),
             (BriefingRow::Member(_), Some(article)) => member_item(article, width),
             (BriefingRow::More(c, n), _) => more_item(c, *n),
             (BriefingRow::Member(_), None) => ListItem::new(""),
@@ -60,21 +69,32 @@ pub fn items(app: &App, width: usize) -> (Vec<ListItem<'static>>, usize) {
     (items, selected_item)
 }
 
-/// "▸ Headline" (two lines at most), the outlets and age, and a line of the
-/// headline article's summary.
-fn story_item(app: &App, story: usize, width: usize, spaced: bool) -> ListItem<'static> {
+/// A story: "● Headline" (two lines at most) and "8 outlets · BBC World,
+/// Al Jazeera, … · 2h ago". The selected story also shows its summary.
+fn story_item(
+    app: &App,
+    story: usize,
+    width: usize,
+    spaced: bool,
+    selected: bool,
+) -> ListItem<'static> {
     let s = &app.stories[story];
     let head = &app.articles[s.head];
     let unread = s.members.iter().any(|&m| app.articles[m].unread);
-    let expanded = app.expanded.contains(&story);
-
-    let marker_style = Style::default().fg(if unread { theme::ACCENT } else { theme::DIM });
-    let title_style = if unread {
-        Style::default()
-            .fg(theme::FG_BRIGHT)
-            .add_modifier(Modifier::BOLD)
+    let (dot, title_style, count_style) = if unread {
+        (
+            Span::styled("  ● ", Style::default().fg(theme::ACCENT)),
+            Style::default()
+                .fg(theme::FG_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::FG),
+        )
     } else {
-        Style::default().fg(theme::GRAY)
+        (
+            Span::raw(" ".repeat(INDENT)),
+            Style::default().fg(theme::GRAY),
+            Style::default().fg(theme::GRAY),
+        )
     };
     let text_width = width.saturating_sub(INDENT);
     let indent = || Span::raw(" ".repeat(INDENT));
@@ -83,42 +103,42 @@ fn story_item(app: &App, story: usize, width: usize, spaced: bool) -> ListItem<'
     if spaced {
         lines.push(Line::raw(""));
     }
-    for (i, part) in super::wrap_words(&head.title, text_width, 2)
-        .into_iter()
-        .enumerate()
-    {
-        let lead = if i > 0 {
-            indent()
-        } else {
-            Span::styled(if expanded { "  ▾ " } else { "  ▸ " }, marker_style)
-        };
-        lines.push(Line::from(vec![lead, Span::styled(part, title_style)]));
+    let mut lead = Some(dot);
+    for part in super::wrap_words(&head.title, text_width, 2) {
+        let first = lead.take().unwrap_or_else(indent);
+        lines.push(Line::from(vec![first, Span::styled(part, title_style)]));
     }
 
-    let own = [head.source_name()];
-    let outlets: Vec<&str> = match app.coverage.get(&head.link) {
-        Some(all) => all.iter().map(String::as_str).collect(),
-        None => own.iter().map(String::as_str).collect(),
+    let outlets: Vec<String> = app
+        .coverage
+        .get(&head.link)
+        .cloned()
+        .unwrap_or_else(|| vec![head.source_name()]);
+    let ago = super::time_ago(s.newest);
+    let (count, names) = match outlets.len() {
+        1 => (String::new(), format!("{} · {ago}", outlets[0])),
+        n => {
+            let more = if n > 2 { ", …" } else { "" };
+            (
+                format!("{n} outlets"),
+                format!(" · {}{more} · {ago}", outlets[..2].join(", ")),
+            )
+        }
     };
-    let mut meta = super::outlets_label(&outlets);
-    let newest = s.newest;
-    meta.push_str(&format!(" · {}", super::time_ago(newest)));
+    let names = super::truncate(&names, text_width.saturating_sub(count.width()));
     lines.push(Line::from(vec![
         indent(),
-        Span::styled(
-            super::truncate(&meta, text_width),
-            Style::default().fg(theme::GRAY),
-        ),
+        Span::styled(count, count_style),
+        Span::styled(names, Style::default().fg(theme::GRAY)),
     ]));
 
-    if !head.summary.is_empty() && !expanded {
-        lines.push(Line::from(vec![
-            indent(),
-            Span::styled(
-                super::truncate(&head.summary, text_width),
-                Style::default().fg(theme::DIM),
-            ),
-        ]));
+    if selected && !app.expanded.contains(&story) && !head.summary.is_empty() {
+        for part in super::wrap_words(&head.summary, text_width.min(SUMMARY_W), 2) {
+            lines.push(Line::from(vec![
+                indent(),
+                Span::styled(part, Style::default().fg(theme::DIM)),
+            ]));
+        }
     }
     ListItem::new(Text::from(lines))
 }
@@ -152,7 +172,7 @@ fn more_item(category: &str, count: usize) -> ListItem<'static> {
     ListItem::new(vec![
         Line::raw(""),
         Line::styled(
-            format!("    + {count} more {stories} in {category}  ↵"),
+            format!("    + {count} more {stories} in {category}"),
             Style::default().fg(theme::GRAY),
         ),
     ])

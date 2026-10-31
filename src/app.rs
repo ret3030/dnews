@@ -247,14 +247,25 @@ impl App {
     /// category, widely covered ones first, and optionally a "more" row.
     fn push_briefing_section(&mut self, from: i64, to: i64, with_more: bool) {
         let stories = &self.stories;
-        for category in &self.categories {
-            // `stories` is best first; members are newest first.
-            let fresh: Vec<usize> = (0..stories.len())
-                .filter(|&s| {
-                    let newest = stories[s].newest;
-                    stories[s].category == *category && newest > from && newest <= to
-                })
-                .collect();
+        // Per category, its stories in the window; `stories` is best first.
+        let mut sections: Vec<(&String, Vec<usize>)> = self
+            .categories
+            .iter()
+            .map(|category| {
+                let fresh = (0..stories.len())
+                    .filter(|&s| {
+                        let newest = stories[s].newest;
+                        stories[s].category == *category && newest > from && newest <= to
+                    })
+                    .collect();
+                (category, fresh)
+            })
+            .filter(|(_, fresh): &(&String, Vec<usize>)| !fresh.is_empty())
+            .collect();
+        // The category with the biggest story comes first.
+        sections.sort_by(|a, b| stories[b.1[0]].score.total_cmp(&stories[a.1[0]].score));
+
+        for (category, fresh) in sections {
             let shown = pick_stories(stories, &fresh);
             for &s in &shown {
                 self.briefing_rows.push(BriefingRow::Story(s));

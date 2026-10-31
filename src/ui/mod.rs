@@ -885,7 +885,36 @@ mod tests {
         println!("{out}");
         assert!(out.contains("Briefing"));
         assert!(out.contains("Since "), "window line");
-        assert!(out.contains("▸ "), "story rows");
+        assert!(
+            out.contains("outlets · "),
+            "story rows lead with their outlet count"
+        );
+        assert!(
+            !out.contains('▸') && !out.contains('▾'),
+            "no triangle markers"
+        );
+        // The category with the biggest story comes first.
+        assert!(
+            out.find("Svět").unwrap() < out.find("Zprávy ČR ─").unwrap(),
+            "{out}"
+        );
+        // Only the selected story shows its summary.
+        let summary_of = |s: usize| {
+            let head = &app.articles[app.stories[s].head];
+            head.summary
+                .split_whitespace()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let crate::app::BriefingRow::Story(first) = app.briefing_rows[0].clone() else {
+            panic!("the Briefing starts with a story");
+        };
+        let crate::app::BriefingRow::Story(second) = app.briefing_rows[1].clone() else {
+            panic!("then another story");
+        };
+        assert!(out.contains(&summary_of(first)));
+        assert!(!out.contains(&summary_of(second)));
         assert!(out.contains("more stories in") || out.contains("more story in"));
 
         // The reader names the other outlets.
