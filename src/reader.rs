@@ -54,8 +54,12 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl ReaderContent {
-    /// Parses a cache entry; `None` for anything from an older format.
+    /// Parses a cache entry; `None` for an older format or a garbled entry,
+    /// so the article is fetched again.
     pub fn from_cache(s: &str) -> Option<Self> {
+        if !looks_like_text(s) {
+            return None;
+        }
         serde_json::from_str::<Self>(s)
             .ok()
             .filter(|c| c.version == FORMAT_VERSION)
@@ -135,8 +139,23 @@ pub async fn fetch_article(url: &str) -> Result<ReaderContent> {
         .error_for_status()?
         .text()
         .await?;
+    if !looks_like_text(&html) {
+        anyhow::bail!("the server sent unreadable data");
+    }
     let url = url.to_string();
     tokio::task::spawn_blocking(move || extract(&html, &url)).await?
+}
+
+/// False for binary data decoded as text (e.g. a compressed body that was
+/// never decompressed): real text has almost no replacement or control
+/// characters.
+fn looks_like_text(s: &str) -> bool {
+    let total = s.chars().count();
+    let bad = s
+        .chars()
+        .filter(|&c| c == char::REPLACEMENT_CHARACTER || (c.is_control() && !c.is_whitespace()))
+        .count();
+    bad * 50 <= total
 }
 
 fn extract(html: &str, url: &str) -> Result<ReaderContent> {
@@ -738,6 +757,47 @@ mod tests {
         let c = html_to_content(&format!("<p>{words}</p>"));
         assert_eq!(c.word_count(), 450);
         assert_eq!(c.reading_minutes(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_gzip_body_sent_without_being_asked_is_decompressed() {
+        // Like seznamzpravy.cz: gzip even when the request asked for none.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = include_bytes!("../testdata/article.html.gz");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/article", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\n\
+                 content-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+
+        let c = fetch_article(&url).await.expect("fetch_article failed");
+        assert!(c.plain_text().contains("Čtenářská vášeň"), "{c:?}");
+    }
+
+    #[test]
+    fn garbled_text_is_rejected_on_download_and_in_the_cache() {
+        assert!(looks_like_text(
+            "Čtenářská vášeň v Česku slábne.\n\tDruhý řádek."
+        ));
+        // What the undecompressed gzip page looked like once decoded.
+        let garbled =
+            "\u{1f}\u{FFFD}\u{8}\u{4}\u{3}\u{FFFD}ے䶕(\u{FFFD}(\u{FFFD}\u{FFFD}JJ0\u{FFFD}Y"
+                .repeat(20);
+        assert!(!looks_like_text(&garbled));
+
+        let good = html_to_content("<p>Fine text.</p>");
+        assert!(ReaderContent::from_cache(&good.to_cache()).is_some());
+        let bad = html_to_content(&format!("<p>{garbled}</p>"));
+        assert_eq!(ReaderContent::from_cache(&bad.to_cache()), None);
     }
 
     #[tokio::test]
