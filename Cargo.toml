@@ -1,9 +1,9 @@
 [package]
 name = "dnews"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "A fast, minimal terminal news reader with Reader View."
+description = "A terminal news reader that groups the news into stories, with a clean article view."
 repository = "https://github.com/ret3030/dnews"
 
 [dependencies]

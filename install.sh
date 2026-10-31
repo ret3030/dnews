@@ -32,8 +32,8 @@ mkdir -p "$BIN_DIR"
 cp "target/release/$BIN_NAME" "$BIN_DIR/$BIN_NAME"
 echo "Installed: $BIN_DIR/$BIN_NAME"
 
-# Seed the default feed list only if neither a repo-local nor an installed one exists.
-if [[ ! -f "./feeds.opml" ]] && [[ ! -f "$CONF_DIR/feeds.opml" ]]; then
+# Seed the default feed list, never overwriting one that is already installed.
+if [[ ! -f "$CONF_DIR/feeds.opml" ]]; then
     mkdir -p "$CONF_DIR"
     cp feeds.opml "$CONF_DIR/feeds.opml"
     echo "Copied default feeds.opml to $CONF_DIR/feeds.opml"
@@ -53,5 +53,4 @@ esac
 
 echo ""
 echo "Run with: $BIN_NAME"
-echo "Feeds are read from ./feeds.opml if present in the current directory,"
-echo "otherwise from $CONF_DIR/feeds.opml. Edit it and restart to change feeds."
+echo "Feeds: $CONF_DIR/feeds.opml. Edit it and restart dnews to change them."

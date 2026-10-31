@@ -18,16 +18,11 @@ use tokio::sync::mpsc;
 use app::{App, ReaderEvent};
 use feed::fetch::FetchEvent;
 
+/// The feed list in the config directory and the database in the data
+/// directory, so dnews behaves the same from any working directory.
 fn resolve_paths() -> anyhow::Result<(PathBuf, PathBuf)> {
-    // Prefer an OPML file next to the binary/cwd (matches the old repo-local
-    // convention), fall back to the XDG config dir.
-    let local_opml = PathBuf::from("feeds.opml");
-    let opml_path = if local_opml.exists() {
-        local_opml
-    } else {
-        let base = BaseDirs::new().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
-        base.config_dir().join("dnews").join("feeds.opml")
-    };
+    let base = BaseDirs::new().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+    let opml_path = base.config_dir().join("dnews").join("feeds.opml");
 
     let proj =
         ProjectDirs::from("", "", "dnews").ok_or_else(|| anyhow::anyhow!("no home directory"))?;
@@ -44,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     if !opml_path.exists() {
         eprintln!(
-            "No feeds.opml found at {} (or ./feeds.opml). Create one first.",
+            "No feeds.opml at {}. Run the installer, or copy the example from the repo there.",
             opml_path.display()
         );
         std::process::exit(1);
@@ -62,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     db.init_schema()?;
 
     let mut app = App::new(db, feeds);
-    app.prune_old_articles();
+    app.prune_articles();
 
     // No mouse capture: it would disable the terminal's own text selection.
     // Terminals still turn the wheel into arrow keys.

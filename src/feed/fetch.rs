@@ -37,7 +37,7 @@ pub fn spawn_reload(
         });
 
         let client = reqwest::Client::builder()
-            .user_agent("dnews/0.1")
+            .user_agent(concat!("dnews/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();

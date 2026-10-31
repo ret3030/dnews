@@ -1,34 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  dnews feed list. Each folder becomes a tab; feeds inside it are fetched on start and Ctrl+R.
+  priority="high" or "low" weighs an outlet in the Briefing (default: normal).
+-->
 <opml version="2.0">
   <head>
-    <title>RSS Feeds</title>
+    <title>dnews feeds</title>
   </head>
   <body>
-    <outline text="Zprávy ČR">
-      <outline text="iRozhlas Hlavní zprávy" title="iRozhlas Hlavní zprávy" priority="high" type="rss" xmlUrl="https://www.irozhlas.cz/rss/irozhlas"/>
-      <outline text="ČT24 Hlavní zprávy" title="ČT24 Hlavní zprávy" priority="high" type="rss" xmlUrl="https://ct24.ceskatelevize.cz/rss/hlavni-zpravy"/>
-      <outline text="Seznam Zprávy" title="Seznam Zprávy" type="rss" xmlUrl="https://www.seznamzpravy.cz/rss"/>
+    <outline text="World">
+      <outline text="BBC World" type="rss" priority="high" xmlUrl="https://feeds.bbci.co.uk/news/world/rss.xml"/>
+      <outline text="Guardian World" type="rss" xmlUrl="https://www.theguardian.com/world/rss"/>
+      <outline text="Al Jazeera" type="rss" xmlUrl="https://www.aljazeera.com/xml/rss/all.xml"/>
+      <outline text="DW World" type="rss" xmlUrl="https://rss.dw.com/xml/rss-en-world"/>
+      <outline text="France 24" type="rss" xmlUrl="https://www.france24.com/en/rss"/>
+      <outline text="NPR World" type="rss" xmlUrl="https://feeds.npr.org/1004/rss.xml"/>
+      <outline text="Politico Europe" type="rss" xmlUrl="https://www.politico.eu/feed/"/>
     </outline>
-    <outline text="Svět">
-      <outline text="BBC World" title="BBC World" priority="high" type="rss" xmlUrl="https://feeds.bbci.co.uk/news/world/rss.xml"/>
-      <outline text="Guardian World" title="Guardian World" type="rss" xmlUrl="https://www.theguardian.com/world/rss"/>
-      <outline text="Al Jazeera" title="Al Jazeera" type="rss" xmlUrl="https://www.aljazeera.com/xml/rss/all.xml"/>
-      <outline text="DW World" title="DW World" type="rss" xmlUrl="https://rss.dw.com/xml/rss-en-world"/>
-      <outline text="France 24" title="France 24" type="rss" xmlUrl="https://www.france24.com/en/rss"/>
-      <outline text="NPR World" title="NPR World" type="rss" xmlUrl="https://feeds.npr.org/1004/rss.xml"/>
-      <outline text="Politico Europe" title="Politico Europe" type="rss" xmlUrl="https://www.politico.eu/feed/"/>
-      <outline text="iRozhlas Svět" title="iRozhlas Svět" type="rss" xmlUrl="https://www.irozhlas.cz/rss/irozhlas/section/zpravy-svet"/>
+    <outline text="Business">
+      <outline text="Guardian Business" type="rss" xmlUrl="https://www.theguardian.com/uk/business/rss"/>
+      <outline text="Liberty Street Economics" type="rss" xmlUrl="https://libertystreeteconomics.newyorkfed.org/feed/"/>
     </outline>
-    <outline text="Trhy &amp; Ekonomika">
-      <outline text="Patria Online" title="Patria Online" type="rss" xmlUrl="https://www.patria.cz/rss.html"/>
-      <outline text="Guardian Business" title="Guardian Business" type="rss" xmlUrl="https://feeds.theguardian.com/theguardian/uk/business/rss"/>
-      <outline text="ČNB" title="ČNB" type="rss" xmlUrl="https://www.cnb.cz/cs/.content/rss-feed/rss-feed_00023.rss"/>
-      <outline text="Liberty Street Economics (NY Fed)" title="Liberty Street Economics (NY Fed)" type="rss" xmlUrl="https://libertystreeteconomics.newyorkfed.org/feed/"/>
-    </outline>
-    <outline text="Věda &amp; Tech">
-      <outline text="Nature News" title="Nature News" type="rss" xmlUrl="https://www.nature.com/nature.rss"/>
-      <outline text="Ars Technica" title="Ars Technica" type="rss" xmlUrl="https://feeds.arstechnica.com/arstechnica/index"/>
-      <outline text="Hacker News" title="Hacker News" priority="low" type="rss" xmlUrl="https://news.ycombinator.com/rss"/>
+    <outline text="Science &amp; Tech">
+      <outline text="Nature" type="rss" xmlUrl="https://www.nature.com/nature.rss"/>
+      <outline text="Ars Technica" type="rss" xmlUrl="https://feeds.arstechnica.com/arstechnica/index"/>
+      <outline text="Hacker News" type="rss" priority="low" xmlUrl="https://news.ycombinator.com/rss"/>
     </outline>
   </body>
 </opml>

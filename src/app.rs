@@ -13,7 +13,7 @@ use crate::store::{ArticleRow, ListFilter, Store};
 const COMPACT_KEY: &str = "compact";
 const READER_WIDE_KEY: &str = "reader_wide";
 
-/// Unsaved articles older than this get deleted by `prune_old_articles`.
+/// Unsaved articles older than this get deleted by `prune_articles`.
 const PRUNE_AFTER_SECS: i64 = 60 * 24 * 60 * 60;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -200,12 +200,14 @@ impl App {
         fetch::spawn_reload(self.feeds.clone(), self.db.path().to_path_buf(), tx.clone());
     }
 
-    /// Deletes unsaved articles older than [`PRUNE_AFTER_SECS`]. Runs after
-    /// every reload, because slow feeds keep serving old items that the
-    /// reload would otherwise bring straight back.
-    pub fn prune_old_articles(&self) {
+    /// Deletes unsaved articles older than [`PRUNE_AFTER_SECS`] or from a
+    /// folder removed from the OPML. Runs after every reload, because slow
+    /// feeds keep serving old items that would otherwise come straight back.
+    pub fn prune_articles(&self) {
         let cutoff = chrono::Utc::now().timestamp() - PRUNE_AFTER_SECS;
-        let _ = self.db.prune_old(cutoff);
+        let mut categories: Vec<String> = self.feeds.iter().map(|f| f.category.clone()).collect();
+        categories.dedup();
+        let _ = self.db.prune(cutoff, &categories);
     }
 
     pub fn reload_view(&mut self) -> Result<()> {
@@ -682,7 +684,7 @@ impl App {
             1 => "1 feed failed, press ! for details".into(),
             n => format!("{n} feeds failed, press ! for details"),
         };
-        self.prune_old_articles();
+        self.prune_articles();
         if self.filter != ListFilter::Briefing {
             // The badges in other tabs need fresh stories too.
             let recent = self.db.list(&ListFilter::Briefing)?;

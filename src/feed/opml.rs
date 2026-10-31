@@ -70,7 +70,7 @@ mod tests {
         }
         let categories: std::collections::HashSet<_> =
             feeds.iter().map(|f| f.category.clone()).collect();
-        assert!(categories.contains("Věda & Tech"));
+        assert!(categories.contains("Science & Tech"));
         let priority = |name: &str| feeds.iter().find(|f| f.name == name).unwrap().priority;
         assert_eq!(priority("BBC World"), 1.5);
         assert_eq!(priority("Hacker News"), 0.5);

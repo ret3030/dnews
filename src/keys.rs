@@ -104,23 +104,7 @@ fn handle_list(
     wide: bool,
 ) -> Result<()> {
     if app.search_active {
-        match key.code {
-            KeyCode::Esc => {
-                app.search.clear();
-                app.search_active = false;
-                app.apply_search();
-            }
-            KeyCode::Enter => app.search_active = false,
-            KeyCode::Backspace => {
-                app.search.pop();
-                app.apply_search();
-            }
-            KeyCode::Char(c) => {
-                app.search.push(c);
-                app.apply_search();
-            }
-            _ => {}
-        }
+        handle_search(app, key);
         return Ok(());
     }
 
@@ -195,6 +179,27 @@ fn handle_list(
         _ => scroll_list(app, key),
     }
     Ok(())
+}
+
+/// Typing in the search box filters the list as you go; Enter keeps the
+/// filter, Esc drops it.
+fn handle_search(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.search.clear();
+            app.search_active = false;
+        }
+        KeyCode::Enter => {
+            app.search_active = false;
+            return;
+        }
+        KeyCode::Backspace => {
+            app.search.pop();
+        }
+        KeyCode::Char(c) => app.search.push(c),
+        _ => return,
+    }
+    app.apply_search();
 }
 
 fn scroll_list(app: &mut App, key: KeyEvent) {

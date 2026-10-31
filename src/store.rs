@@ -261,14 +261,25 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes articles published before `cutoff` (unix seconds), except
-    /// saved ones.
-    pub fn prune_old(&self, cutoff: i64) -> Result<usize> {
-        let conn = &self.conn;
-        Ok(conn.execute(
-            "DELETE FROM articles WHERE published < ?1 AND saved = 0",
-            params![cutoff],
-        )?)
+    /// Deletes unsaved articles published before `cutoff` (unix seconds) or
+    /// filed under a category that is no longer in `categories`. An empty
+    /// list keeps every category (SQLite's `NOT IN ()` would match all).
+    pub fn prune(&self, cutoff: i64, categories: &[String]) -> Result<usize> {
+        if categories.is_empty() {
+            return Ok(self.conn.execute(
+                "DELETE FROM articles WHERE saved = 0 AND published < ?1",
+                params![cutoff],
+            )?);
+        }
+        let placeholders = vec!["?"; categories.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM articles WHERE saved = 0
+             AND (published < ? OR category NOT IN ({placeholders}))"
+        );
+        let params = std::iter::once(cutoff.to_string()).chain(categories.iter().cloned());
+        Ok(self
+            .conn
+            .execute(&sql, rusqlite::params_from_iter(params))?)
     }
 }
 
@@ -306,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_old_keeps_saved_articles_regardless_of_age() {
+    fn prune_keeps_saved_articles_regardless_of_age() {
         let store = test_store();
         store
             .upsert_batch(&[
@@ -337,7 +348,7 @@ mod tests {
             .set_saved("https://example.com/old-saved", true)
             .unwrap();
 
-        let deleted = store.prune_old(500_000).unwrap();
+        let deleted = store.prune(500_000, &[String::new()]).unwrap();
         assert_eq!(deleted, 1);
 
         let remaining: Vec<String> = store
@@ -464,5 +475,40 @@ mod tests {
         let counts = store.unread_by_category().unwrap();
         assert_eq!(counts.get("World"), Some(&2));
         assert_eq!(counts.get("Tech"), None);
+    }
+
+    #[test]
+    fn prune_drops_categories_gone_from_the_opml_but_keeps_saved() {
+        let store = test_store();
+        let article = |category: &str, link: &str| NewArticle {
+            category: category.into(),
+            title: "t".into(),
+            link: link.into(),
+            published: 1_000_000,
+            ..Default::default()
+        };
+        store
+            .upsert_batch(&[
+                article("World", "https://example.com/kept"),
+                article("Old folder", "https://example.com/gone"),
+                article("Old folder", "https://example.com/saved"),
+            ])
+            .unwrap();
+        store.set_saved("https://example.com/saved", true).unwrap();
+
+        assert_eq!(
+            store.prune(0, &[]).unwrap(),
+            0,
+            "no list, no category pruning"
+        );
+        assert_eq!(store.prune(0, &["World".to_string()]).unwrap(), 1);
+        let left: Vec<String> = store
+            .list(&ListFilter::All)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.link)
+            .collect();
+        assert_eq!(left.len(), 2);
+        assert!(!left.contains(&"https://example.com/gone".to_string()));
     }
 }
