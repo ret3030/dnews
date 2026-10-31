@@ -14,6 +14,7 @@ pub enum FetchEvent {
 }
 
 const MAX_CONCURRENT: usize = 16;
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub fn spawn_reload(
     feeds: Vec<Feed>,
@@ -57,8 +58,8 @@ pub fn spawn_reload(
                         let _ = write_tx.send(articles);
                     }
                     Err(e) => {
-                        let _ =
-                            progress_tx.send(FetchEvent::Error(feed.name.clone(), e.to_string()));
+                        let _ = progress_tx
+                            .send(FetchEvent::Error(feed.name.clone(), format!("{e:#}")));
                     }
                 }
                 let _ = progress_tx.send(FetchEvent::FeedDone);
@@ -76,13 +77,24 @@ pub fn spawn_reload(
 }
 
 async fn fetch_one(client: &reqwest::Client, feed: &Feed) -> anyhow::Result<Vec<NewArticle>> {
-    let bytes = client
-        .get(&feed.url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let get = || async {
+        client
+            .get(&feed.url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await
+    };
+    // A dropped connection or a DNS blip usually passes within a second; an
+    // HTTP error or a broken feed would not, so only those get no retry.
+    let bytes = match get().await {
+        Err(e) if e.status().is_none() && !e.is_decode() => {
+            tokio::time::sleep(RETRY_AFTER).await;
+            get().await?
+        }
+        result => result?,
+    };
     let parsed = feed_rs::parser::parse(&bytes[..])?;
 
     let mut out = Vec::with_capacity(parsed.entries.len());
@@ -177,5 +189,73 @@ mod tests {
         let s = plain_summary(&long);
         assert!(s.chars().count() <= SUMMARY_MAX_CHARS + 1);
         assert!(s.ends_with('…'));
+    }
+
+    /// A local server that answers each connection with the next response
+    /// (`None` closes the connection unanswered). Returns the feed URL and a
+    /// counter of connections.
+    async fn serve(
+        responses: Vec<Option<&'static str>>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/feed", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0u8; 2048];
+                let _ = socket.read(&mut request).await;
+                if let Some(response) = response {
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            }
+        });
+        (url, count)
+    }
+
+    const RSS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/rss+xml\r\nconnection: close\r\n\r\n\
+        <rss version=\"2.0\"><channel><title>T</title><item><title>Story</title>\
+        <link>https://example.com/story</link></item></channel></rss>";
+
+    fn test_feed(url: String) -> Feed {
+        Feed {
+            url,
+            category: "World".into(),
+            name: "Test".into(),
+            priority: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_is_retried_once() {
+        let (url, connections) = serve(vec![None, Some(RSS)]).await;
+        let articles = fetch_one(&reqwest::Client::new(), &test_feed(url))
+            .await
+            .expect("the retry should succeed");
+        assert_eq!(articles[0].title, "Story");
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_http_error_fails_at_once_and_says_why() {
+        let (url, connections) = serve(vec![Some(
+            "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        )])
+        .await;
+        let Err(err) = fetch_one(&reqwest::Client::new(), &test_feed(url)).await else {
+            panic!("a 404 must fail");
+        };
+        assert!(format!("{err:#}").contains("404"), "{err:#}");
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no retry"
+        );
     }
 }
