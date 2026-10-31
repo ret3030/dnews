@@ -2,8 +2,9 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc;
 
-use crate::app::{App, Overlay, ReaderEvent, Screen};
+use crate::app::{App, BriefingRow, Overlay, ReaderEvent, Screen};
 use crate::feed::fetch::FetchEvent;
+use crate::store::ListFilter;
 
 pub fn handle(
     app: &mut App,
@@ -81,6 +82,11 @@ fn handle_reading(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Esc if !app.link_input.is_empty() => app.link_input.clear(),
         KeyCode::Char('w') => app.toggle_reader_wide(),
+        KeyCode::Char('b') => {
+            if let Err(e) = app.show_story() {
+                app.notice = Some(format!("Could not open the Briefing: {e}"));
+            }
+        }
         _ => return false,
     }
     true
@@ -123,6 +129,22 @@ fn handle_list(
         return Ok(());
     }
 
+    // In the Briefing, Enter on a story expands it and on "+ N more" opens
+    // that category; on an article it reads it like anywhere else.
+    if app.filter == ListFilter::Briefing && key.code == KeyCode::Enter && !app.panel_focused {
+        match app.briefing_rows.get(app.selected).cloned() {
+            Some(BriefingRow::Story(story)) => {
+                app.toggle_story(story);
+                return Ok(());
+            }
+            Some(BriefingRow::More(category, _)) => {
+                app.set_filter(ListFilter::Category(category))?;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     if wide {
         match key.code {
             KeyCode::Char('J' | 'K') => {
@@ -157,7 +179,7 @@ fn handle_list(
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('/') => app.search_active = true,
+        KeyCode::Char('/') if app.filter != ListFilter::Briefing => app.search_active = true,
         KeyCode::Esc if !app.search.is_empty() => {
             app.search.clear();
             app.apply_search();
@@ -168,6 +190,7 @@ fn handle_list(
         }
         KeyCode::Tab => app.cycle_filter(1)?,
         KeyCode::BackTab => app.cycle_filter(-1)?,
+        KeyCode::Char('M') if app.filter == ListFilter::Briefing => app.finish_briefing()?,
         _ => scroll_list(app, key),
     }
     Ok(())
@@ -227,11 +250,11 @@ fn scroll_article(app: &mut App, key: KeyEvent) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::Screen;
     use crate::feed::Feed;
-    use crate::store::{NewArticle, Store};
+    use crate::store::{ListFilter, NewArticle, Store};
 
     fn test_app() -> App {
         let path = crate::store::temp_db_path("dnews_keys_test");
@@ -257,6 +280,7 @@ mod tests {
         ])
         .unwrap();
         let mut app = App::new(db, Vec::<Feed>::new());
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
         app
     }
@@ -944,6 +968,239 @@ mod tests {
         assert!(
             !app.articles[1].saved,
             "the merely selected row is untouched"
+        );
+    }
+
+    /// The real news snapshot, moved to end now, in a fresh DB with feeds
+    /// for its outlets. Starts in the Briefing.
+    pub(crate) fn briefing_app() -> App {
+        let (articles, then) = crate::cluster::tests::snapshot();
+        let shift = chrono::Utc::now().timestamp() - then;
+        let db = Store::open(&crate::store::temp_db_path("dnews_briefing_test")).unwrap();
+        db.init_schema().unwrap();
+        let rows: Vec<NewArticle> = articles
+            .iter()
+            .map(|a| NewArticle {
+                category: a.category.clone(),
+                source: a.source.clone(),
+                summary: a.summary.clone(),
+                title: a.title.clone(),
+                link: a.link.clone(),
+                published: a.published + shift,
+            })
+            .collect();
+        db.upsert_batch(&rows).unwrap();
+        let mut feeds: Vec<Feed> = Vec::new();
+        for a in &articles {
+            if !feeds.iter().any(|f| f.name == a.source) {
+                feeds.push(Feed {
+                    url: format!("https://example.com/{}", feeds.len()),
+                    category: a.category.clone(),
+                    name: a.source.clone(),
+                    priority: 1.0,
+                });
+            }
+        }
+        let mut app = App::new(db, feeds);
+        app.reload_view().unwrap();
+        app
+    }
+
+    fn row_of(app: &App, wanted: impl Fn(&BriefingRow) -> bool) -> usize {
+        app.briefing_rows
+            .iter()
+            .position(wanted)
+            .expect("no such Briefing row")
+    }
+
+    #[tokio::test]
+    async fn the_briefing_groups_stories_and_expands_them() {
+        let mut app = briefing_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        assert_eq!(
+            app.filter,
+            ListFilter::Briefing,
+            "the app opens on the Briefing"
+        );
+
+        // Poland's court story is there, with all its outlets.
+        let poland = (0..app.stories.len())
+            .find(|&s| {
+                app.stories[s].members.iter().any(|&m| {
+                    app.articles[m]
+                        .title
+                        .contains("Poland’s constitutional court")
+                })
+            })
+            .unwrap();
+        assert!(app.stories[poland].sources >= 5);
+        app.selected = row_of(&app, |r| *r == BriefingRow::Story(poland));
+
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        let members = app.stories[poland].members.len();
+        assert_eq!(
+            app.briefing_rows
+                .iter()
+                .filter(|r| **r == BriefingRow::Member(poland))
+                .count(),
+            members,
+            "Enter lists every article of the story"
+        );
+
+        // Enter on one of them reads it.
+        app.selected += 1;
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.screen, Screen::Reader);
+        let opened = app.reader_article.as_ref().unwrap().link.clone();
+        assert!(
+            app.stories[poland]
+                .members
+                .iter()
+                .any(|&m| app.articles[m].link == opened)
+        );
+
+        // Back in the list, Enter on the story collapses it again.
+        handle(
+            &mut app,
+            key(KeyCode::Char('q')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        app.selected = row_of(&app, |r| *r == BriefingRow::Story(poland));
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(!app.briefing_rows.contains(&BriefingRow::Member(poland)));
+    }
+
+    #[test]
+    fn more_opens_the_category_and_each_category_shows_a_few_stories() {
+        let mut app = briefing_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        for category in app.categories.clone() {
+            let shown = app
+                .briefing_rows
+                .iter()
+                .filter(
+                    |r| matches!(r, BriefingRow::Story(s) if app.stories[*s].category == category),
+                )
+                .count();
+            assert!((1..=5).contains(&shown), "{category}: {shown} stories");
+        }
+        let more = row_of(
+            &app,
+            |r| matches!(r, BriefingRow::More(c, _) if c == "Svět"),
+        );
+        app.selected = more;
+        assert!(
+            app.selected_article().is_none(),
+            "a more row is not an article"
+        );
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.filter, ListFilter::Category("Svět".into()));
+    }
+
+    #[test]
+    fn capital_m_finishes_the_briefing() {
+        let mut app = briefing_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        assert!(!app.briefing_rows.is_empty());
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('M')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert!(
+            app.briefing_rows.is_empty(),
+            "nothing new since finishing it"
+        );
+        assert_eq!(app.unread_count, 0, "everything in it is read");
+        assert!(app.db.setting("briefing_done").unwrap().is_some());
+
+        // Survives a restart: a new App over the same DB starts empty too.
+        app.reload_view().unwrap();
+        assert!(app.briefing_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn b_in_the_reader_shows_the_articles_story() {
+        let mut app = briefing_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        app.set_filter(ListFilter::All).unwrap();
+        app.selected = app
+            .filtered
+            .iter()
+            .position(|&i| {
+                app.articles[i]
+                    .title
+                    .starts_with("What we know about Binance")
+            })
+            .unwrap();
+        assert!(app.coverage[&app.articles[app.filtered[app.selected]].link].len() >= 5);
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('b')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.screen, Screen::List);
+        assert_eq!(app.filter, ListFilter::Briefing);
+        assert!(matches!(
+            app.briefing_rows[app.selected],
+            BriefingRow::Member(_)
+        ));
+        assert!(
+            app.selected_article()
+                .unwrap()
+                .title
+                .starts_with("What we know about Binance")
         );
     }
 }

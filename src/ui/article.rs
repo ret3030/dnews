@@ -39,8 +39,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, panel: bool) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            // Title lines, the meta line and the bottom rule.
-            Constraint::Length(title.len() as u16 + 2),
+            // Title lines, meta line, coverage line and the bottom rule.
+            Constraint::Length(title.len() as u16 + 2 + u16::from(also_covered_by(app).is_some())),
             Constraint::Min(0),
             Constraint::Length(footer.len() as u16),
         ])
@@ -102,7 +102,27 @@ fn render_header(f: &mut Frame, app: &App, title: Vec<String>, area: Rect) {
         meta.join("  ·  "),
         Style::default().fg(theme::GRAY),
     ));
+    if let Some(others) = also_covered_by(app) {
+        lines.push(Line::styled(
+            format!("Also covered by {others}  ·  b to compare"),
+            Style::default().fg(theme::DIM),
+        ));
+    }
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+}
+
+/// "BBC World, Guardian World +2": the other outlets covering this story.
+fn also_covered_by(app: &App) -> Option<String> {
+    let article = app.reader_article.as_ref()?;
+    let own = article.source_name();
+    let others: Vec<&str> = app
+        .coverage
+        .get(&article.link)?
+        .iter()
+        .map(String::as_str)
+        .filter(|o| *o != own)
+        .collect();
+    (!others.is_empty()).then(|| super::outlets_label(&others))
 }
 
 fn render_body(f: &mut Frame, app: &App, area: Rect) {

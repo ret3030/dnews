@@ -1,4 +1,5 @@
 pub mod article;
+pub mod briefing;
 pub mod document;
 pub mod list;
 pub mod overlay;
@@ -79,6 +80,20 @@ pub fn time_ago(published: i64) -> String {
     } else {
         format!("{}d ago", diff / 86400)
     }
+}
+
+/// "BBC World, Guardian World +2": the first two names and a count.
+pub fn outlets_label(outlets: &[&str]) -> String {
+    let mut label = outlets
+        .iter()
+        .take(2)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if outlets.len() > 2 {
+        label.push_str(&format!(" +{}", outlets.len() - 2));
+    }
+    label
 }
 
 /// Cuts `s` to `max_width` display columns, ending in an ellipsis if cut.
@@ -441,14 +456,17 @@ mod tests {
                 url: "https://example.com/feed".into(),
                 category: "Tech & Dev".into(),
                 name: "Example".into(),
+                priority: 1.0,
             },
             Feed {
                 url: "https://irozhlas.cz/feed".into(),
                 category: "Zprávy".into(),
                 name: "iRozhlas".into(),
+                priority: 1.0,
             },
         ];
         let mut app = App::new(db, feeds);
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
 
         let out = dump(120, 30, &app);
@@ -483,6 +501,8 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(db, vec![]);
+
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
         app.screen = crate::app::Screen::Reader;
         app.reader = Some(crate::reader::ReaderContent::from_plain(
@@ -519,6 +539,8 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(db, vec![]);
+
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
         // Simulate the debounced preview already having loaded, as it would
         // shortly after the selection settles.
@@ -566,6 +588,8 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(db, vec![]);
+
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
         app.screen = crate::app::Screen::Reader;
         app.reader_article = app.articles.first().cloned();
@@ -642,6 +666,7 @@ mod tests {
         }])
         .unwrap();
         let mut app = App::new(db, vec![]);
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
 
         let width = 60;
@@ -666,8 +691,10 @@ mod tests {
             url: "https://example.com/feed".into(),
             category: "World".into(),
             name: "Example".into(),
+            priority: 1.0,
         }];
         let mut app = App::new(db, feeds);
+        app.filter = crate::store::ListFilter::All;
         app.reload_view().unwrap();
         (app, path)
     }
@@ -849,5 +876,45 @@ mod tests {
         for l in wrap_hints(&["日本 語", "ニュース"], " ", 6) {
             assert!(l.width() <= 8, "{l:?}");
         }
+    }
+
+    #[test]
+    fn the_briefing_reader_and_list_show_story_coverage() {
+        let mut app = crate::keys::tests::briefing_app();
+        let out = dump(110, 46, &app);
+        println!("{out}");
+        assert!(out.contains("Briefing"));
+        assert!(out.contains("Since "), "window line");
+        assert!(out.contains("▸ "), "story rows");
+        assert!(out.contains("more stories in") || out.contains("more story in"));
+
+        // The reader names the other outlets.
+        app.set_filter(crate::store::ListFilter::All).unwrap();
+        let binance = app
+            .filtered
+            .iter()
+            .position(|&i| {
+                app.articles[i]
+                    .title
+                    .starts_with("What we know about Binance")
+            })
+            .unwrap();
+        app.selected = binance;
+        let out = dump(110, 30, &app);
+        assert!(out.contains("[+"), "badge in the list:\n{out}");
+        app.screen = crate::app::Screen::Reader;
+        app.reader_article = app.selected_article().cloned();
+        let out = dump(110, 30, &app);
+        assert!(out.contains("Also covered by"), "{out}");
+    }
+
+    #[test]
+    fn outlets_label_names_two_and_counts_the_rest() {
+        assert_eq!(super::outlets_label(&["BBC"]), "BBC");
+        assert_eq!(super::outlets_label(&["BBC", "DW"]), "BBC, DW");
+        assert_eq!(
+            super::outlets_label(&["BBC", "DW", "ČT24", "NPR"]),
+            "BBC, DW +2"
+        );
     }
 }

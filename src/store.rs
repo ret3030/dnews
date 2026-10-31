@@ -3,6 +3,9 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
+/// How far back the Briefing looks.
+pub const BRIEFING_WINDOW_SECS: i64 = 48 * 3600;
+
 pub struct Store {
     conn: Connection,
     path: std::path::PathBuf,
@@ -10,6 +13,7 @@ pub struct Store {
 
 #[derive(Clone, Debug, Default)]
 pub struct ArticleRow {
+    pub category: String,
     /// Feed name from the OPML; empty for rows stored before it existed.
     pub source: String,
     pub summary: String,
@@ -47,6 +51,8 @@ pub struct NewArticle {
 /// Which articles `Store::list` should return.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListFilter {
+    /// The last two days, grouped into stories by `cluster`.
+    Briefing,
     All,
     Category(String),
     Saved,
@@ -101,17 +107,23 @@ impl Store {
     }
 
     pub fn list(&self, filter: &ListFilter) -> Result<Vec<ArticleRow>> {
-        let (condition, category) = match filter {
+        let briefing = format!("published > strftime('%s', 'now') - {BRIEFING_WINDOW_SECS}");
+        let (condition, param) = match filter {
+            ListFilter::Briefing => (briefing.as_str(), None),
             ListFilter::All => ("1", None),
-            ListFilter::Category(c) => ("category = ?1", Some(c)),
+            ListFilter::Category(c) => ("category = ?1", Some(c.clone())),
             ListFilter::Saved => ("saved = 1", None),
         };
+        self.query(condition, param)
+    }
+
+    fn query(&self, condition: &str, param: Option<String>) -> Result<Vec<ArticleRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT title, link, published, unread, saved, content_text, source, summary,
-                    scroll_pos
+                    scroll_pos, category
              FROM articles WHERE {condition} ORDER BY published DESC"
         ))?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(category), |r| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(param), |r| {
             Ok(ArticleRow {
                 title: r.get(0)?,
                 link: r.get(1)?,
@@ -122,6 +134,7 @@ impl Store {
                 source: r.get(6)?,
                 summary: r.get(7)?,
                 scroll_pos: r.get(8)?,
+                category: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

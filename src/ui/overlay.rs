@@ -12,6 +12,14 @@ use crate::app::{App, Overlay};
 /// (section, [(keys, action)])
 pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
+        "Briefing",
+        &[
+            ("Enter", "expand a story / read an article"),
+            ("M", "done reading: mark it all read"),
+            ("b", "in an article: back to its story"),
+        ],
+    ),
+    (
         "List",
         &[
             ("j / k", "move down / up"),

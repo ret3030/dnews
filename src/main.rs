@@ -1,4 +1,5 @@
 mod app;
+mod cluster;
 mod feed;
 mod keys;
 mod platform;

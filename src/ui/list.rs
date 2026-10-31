@@ -55,10 +55,11 @@ fn tab_labels(app: &App) -> Vec<(String, bool)> {
             name.to_string()
         }
     };
-    let mut labels = vec![(
+    let mut labels = vec![("Briefing".to_string(), app.filter == ListFilter::Briefing)];
+    labels.push((
         label("All", app.unread_count),
         app.filter == ListFilter::All,
-    )];
+    ));
     labels.extend(app.categories.iter().map(|c| {
         let unread = app.tab_unread.get(c).copied().unwrap_or(0);
         (
@@ -147,6 +148,18 @@ fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
 }
 
 fn render_unread(f: &mut Frame, app: &App, area: Rect) {
+    if app.filter == ListFilter::Briefing {
+        let line = Line::styled(
+            format!(
+                " Since {} · {} new articles",
+                since_label(app.briefing_since),
+                app.briefing_new
+            ),
+            Style::default().fg(theme::GRAY),
+        );
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let shown = app.filtered.len();
     let unread = app
         .filtered
@@ -179,7 +192,8 @@ pub fn day_label(published: i64, today: chrono::NaiveDate) -> String {
 }
 
 /// Builds one list entry; `width` is the usable column count.
-fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'static> {
+/// One article; `others` is how many other outlets cover its story.
+fn article_item(row: &ArticleRow, width: usize, compact: bool, others: usize) -> ListItem<'static> {
     let source = row.source_name();
     let ago = super::time_ago(row.published);
 
@@ -206,7 +220,11 @@ fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'stat
     let star = row
         .saved
         .then(|| Span::styled(" \u{f005}", Style::default().fg(theme::YELLOW)));
-    let star_w = if row.saved { 2 } else { 0 };
+    let badge = (others > 0).then(|| format!(" [+{others}]"));
+    let star_w = if row.saved { 2 } else { 0 } + badge.as_ref().map_or(0, |b| b.width());
+    let star = star
+        .into_iter()
+        .chain(badge.map(|b| Span::styled(b, Style::default().fg(theme::DIM))));
 
     if compact {
         // Fixed-width meta column so every title ends at the same place:
@@ -252,7 +270,7 @@ fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'stat
     ListItem::new(Text::from(lines))
 }
 
-fn separator_item(label: &str, width: usize) -> ListItem<'static> {
+pub(super) fn separator_item(label: &str, width: usize) -> ListItem<'static> {
     let rule = "─".repeat(width.saturating_sub(label.width() + 3));
     ListItem::new(Line::from(vec![
         Span::styled(
@@ -265,25 +283,12 @@ fn separator_item(label: &str, width: usize) -> ListItem<'static> {
     ]))
 }
 
-fn render_list(f: &mut Frame, app: &App, area: Rect) {
-    // A gutter on both sides keeps titles off the pane edge (and, in the
-    // split layout, away from the article panel).
-    let inner = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(RIGHT_GUTTER),
-        ])
-        .split(area);
-    let list_area = inner[1];
-    let width = list_area.width as usize;
-
-    // Only articles that can be on screen are built: a screen's worth on
-    // each side of the selection (every entry is at least one line tall).
-    // Day separators are extra items, so the selection is re-indexed.
+/// Article entries under day headings. Only articles that can be on screen
+/// are built: a screen's worth on each side of the selection (every entry
+/// is at least one line tall). Returns the items and the selected one.
+fn article_items(app: &App, width: usize, height: usize) -> (Vec<ListItem<'static>>, usize) {
     let today = Local::now().date_naive();
-    let reach = list_area.height as usize;
+    let reach = height;
     let start = app.selected.saturating_sub(reach);
     let end = (app.selected + reach + 1).min(app.filtered.len());
     let article_at = |pos: usize| app.filtered.get(pos).and_then(|&i| app.articles.get(i));
@@ -305,14 +310,57 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
         if pos == app.selected {
             selected_item = items.len();
         }
-        items.push(article_item(row, width, app.compact));
+        let others = app
+            .coverage
+            .get(&row.link)
+            .map_or(0, |o| o.len().saturating_sub(1));
+        items.push(article_item(row, width, app.compact, others));
     }
+    (items, selected_item)
+}
+
+/// "today 08:15", "yesterday 22:40" or "Thu 29 Oct 07:30".
+pub fn since_label(timestamp: i64) -> String {
+    let Some(time) = Local.timestamp_opt(timestamp, 0).single() else {
+        return String::new();
+    };
+    match (Local::now().date_naive() - time.date_naive()).num_days() {
+        0 => time.format("today %H:%M").to_string(),
+        1 => time.format("yesterday %H:%M").to_string(),
+        _ => time.format("%a %-d %b %H:%M").to_string(),
+    }
+}
+
+fn render_list(f: &mut Frame, app: &App, area: Rect) {
+    // A gutter on both sides keeps titles off the pane edge (and, in the
+    // split layout, away from the article panel).
+    let inner = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(RIGHT_GUTTER),
+        ])
+        .split(area);
+    let list_area = inner[1];
+    let width = list_area.width as usize;
+
+    let (items, selected_item) = if app.filter == ListFilter::Briefing {
+        super::briefing::items(app, width)
+    } else {
+        article_items(app, width, list_area.height as usize)
+    };
 
     if items.is_empty() {
         let empty_msg = if app.loading {
             format!("  {} Fetching feeds...", super::spinner(app.spin_frame))
         } else if app.filter == ListFilter::Saved {
             "  Nothing saved yet. Press s on an article to save it.".to_string()
+        } else if app.filter == ListFilter::Briefing {
+            format!(
+                "  All caught up since {}. Tab shows every article.",
+                since_label(app.briefing_since)
+            )
         } else if app.search_active || !app.search.is_empty() {
             "  No matches".to_string()
         } else {
@@ -332,7 +380,9 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 
 /// Key hints for the footer when nothing else is shown there.
 fn default_hints(app: &App, split: bool) -> &'static [&'static str] {
-    if !split {
+    if app.filter == ListFilter::Briefing && !app.panel_focused {
+        &["↵ open", "M done reading", "Tab tabs", "? help", "q quit"]
+    } else if !split {
         &["↵ read", "/ search", "Tab tabs", "? help", "q quit"]
     } else if app.panel_focused {
         &["J/K next/prev", "q back to list", "? help"]

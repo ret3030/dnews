@@ -159,6 +159,7 @@ mod tests {
             url: "https://news.ycombinator.com/rss".to_string(),
             category: "Tech".to_string(),
             name: "Hacker News".to_string(),
+            priority: 1.0,
         };
         let articles = fetch_one(&client, &feed).await.expect("fetch_one failed");
         assert!(!articles.is_empty(), "expected at least one entry");

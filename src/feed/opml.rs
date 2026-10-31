@@ -32,10 +32,16 @@ fn walk(node: Node, category: &str, feeds: &mut Vec<Feed>) {
             .filter(|n| !n.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| super::domain(url));
+        let priority = match node.attribute("priority") {
+            Some("high") => 1.5,
+            Some("low") => 0.5,
+            _ => 1.0,
+        };
         feeds.push(Feed {
             url: url.to_string(),
             category: category.to_string(),
             name,
+            priority,
         });
         return;
     }
@@ -65,5 +71,9 @@ mod tests {
         let categories: std::collections::HashSet<_> =
             feeds.iter().map(|f| f.category.clone()).collect();
         assert!(categories.contains("Věda & Tech"));
+        let priority = |name: &str| feeds.iter().find(|f| f.name == name).unwrap().priority;
+        assert_eq!(priority("BBC World"), 1.5);
+        assert_eq!(priority("Hacker News"), 0.5);
+        assert_eq!(priority("Al Jazeera"), 1.0);
     }
 }

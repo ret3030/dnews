@@ -8,6 +8,8 @@ pub struct Feed {
     /// Display name from the OPML `text`/`title` attribute, falling back to
     /// the feed's domain.
     pub name: String,
+    /// Weight in the Briefing: OPML `priority="high"` is 1.5, `"low"` 0.5.
+    pub priority: f32,
 }
 
 /// Host part of a URL without "www.", used when a feed has no name.
