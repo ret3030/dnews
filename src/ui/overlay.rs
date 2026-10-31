@@ -16,6 +16,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Enter", "expand a story / read an article"),
             ("M", "done reading: mark it all read"),
+            ("U", "undo M"),
             ("b", "in an article: back to its story"),
         ],
     ),

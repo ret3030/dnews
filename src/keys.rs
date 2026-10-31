@@ -191,6 +191,7 @@ fn handle_list(
         KeyCode::Tab => app.cycle_filter(1)?,
         KeyCode::BackTab => app.cycle_filter(-1)?,
         KeyCode::Char('M') if app.filter == ListFilter::Briefing => app.finish_briefing()?,
+        KeyCode::Char('U') if app.filter == ListFilter::Briefing => app.undo_finish_briefing()?,
         _ => scroll_list(app, key),
     }
     Ok(())
@@ -1130,12 +1131,23 @@ pub(crate) mod tests {
         assert_eq!(app.filter, ListFilter::Category("Svět".into()));
     }
 
+    /// Whether every story row belongs to the finished Briefing.
+    fn all_finished(app: &App) -> bool {
+        app.briefing_rows.iter().all(|r| match r {
+            BriefingRow::Story(s) | BriefingRow::Member(s) => {
+                app.stories[*s].newest <= app.briefing_since
+            }
+            BriefingRow::More(..) => false,
+        })
+    }
+
     #[test]
-    fn capital_m_finishes_the_briefing() {
+    fn capital_m_finishes_the_briefing_but_keeps_it_visible() {
         let mut app = briefing_app();
         let (progress_tx, _p) = mpsc::unbounded_channel();
         let (reader_tx, _r) = mpsc::unbounded_channel();
-        assert!(!app.briefing_rows.is_empty());
+        let before = app.briefing_rows.len();
+        assert!(before > 0 && !all_finished(&app));
 
         handle(
             &mut app,
@@ -1145,16 +1157,81 @@ pub(crate) mod tests {
             false,
         )
         .unwrap();
-        assert!(
-            app.briefing_rows.is_empty(),
-            "nothing new since finishing it"
-        );
         assert_eq!(app.unread_count, 0, "everything in it is read");
-        assert!(app.db.setting("briefing_done").unwrap().is_some());
+        assert_eq!(app.briefing_new, 0);
+        assert!(
+            !app.briefing_rows.is_empty(),
+            "the finished Briefing stays visible"
+        );
+        assert!(all_finished(&app));
 
-        // Survives a restart: a new App over the same DB starts empty too.
+        // Something new arrives: it comes first, the finished part after it.
+        let now = chrono::Utc::now().timestamp();
+        app.db
+            .upsert_batch(&[NewArticle {
+                category: "Svět".into(),
+                source: "BBC World".into(),
+                title: "Volcano erupts in Iceland".into(),
+                link: "https://example.com/volcano".into(),
+                published: now + 60,
+                ..Default::default()
+            }])
+            .unwrap();
         app.reload_view().unwrap();
-        assert!(app.briefing_rows.is_empty());
+        assert_eq!(app.briefing_new, 1);
+        assert!(app.articles[app.filtered[0]].title.starts_with("Volcano"));
+        assert!(!all_finished(&app));
+    }
+
+    #[test]
+    fn capital_u_takes_back_the_last_m() {
+        let mut app = briefing_app();
+        let (progress_tx, _p) = mpsc::unbounded_channel();
+        let (reader_tx, _r) = mpsc::unbounded_channel();
+        let unread = app.unread_count;
+        let rows = app.briefing_rows.clone();
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('M')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            key(KeyCode::Char('U')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.unread_count, unread, "unread flags are back");
+        assert_eq!(app.briefing_rows, rows, "the same Briefing as before");
+        assert_eq!(app.db.setting("briefing_done").unwrap(), None);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('U')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.notice.as_deref(), Some("Nothing to undo"));
+
+        // Plain u still pages up in the Briefing.
+        app.selected = 20;
+        handle(
+            &mut app,
+            key(KeyCode::Char('u')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.selected, 5);
     }
 
     #[tokio::test]

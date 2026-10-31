@@ -149,14 +149,12 @@ fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
 
 fn render_unread(f: &mut Frame, app: &App, area: Rect) {
     if app.filter == ListFilter::Briefing {
-        let line = Line::styled(
-            format!(
-                " Since {} · {} new articles",
-                since_label(app.briefing_since),
-                app.briefing_new
-            ),
-            Style::default().fg(theme::GRAY),
-        );
+        let since = since_label(app.briefing_since);
+        let text = match app.briefing_new {
+            0 => format!(" Finished {since} · nothing new since"),
+            n => format!(" Since {since} · {n} new articles"),
+        };
+        let line = Line::styled(text, Style::default().fg(theme::GRAY));
         f.render_widget(Paragraph::new(line), area);
         return;
     }

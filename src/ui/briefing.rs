@@ -19,11 +19,25 @@ pub fn items(app: &App, width: usize) -> (Vec<ListItem<'static>>, usize) {
     let mut items = Vec::new();
     let mut selected_item = 0;
     let mut category: Option<&str> = None;
+    let mut in_finished = false;
     for (row_index, row) in app.briefing_rows.iter().enumerate() {
         let row_category = match row {
             BriefingRow::Story(s) | BriefingRow::Member(s) => app.stories[*s].category.as_str(),
             BriefingRow::More(c, _) => c.as_str(),
         };
+        // Stories with nothing after `briefing_since` belong to the
+        // finished Briefing, which follows under its own divider.
+        let finished = match row {
+            BriefingRow::Story(s) | BriefingRow::Member(s) => {
+                app.stories[*s].newest <= app.briefing_since
+            }
+            BriefingRow::More(..) => false,
+        };
+        if finished && !in_finished {
+            items.push(finished_item(app.briefing_since, width));
+            in_finished = true;
+            category = None;
+        }
         let first_in_category = category != Some(row_category);
         if first_in_category {
             items.push(super::list::separator_item(row_category, width));
@@ -87,7 +101,7 @@ fn story_item(app: &App, story: usize, width: usize, spaced: bool) -> ListItem<'
         None => own.iter().map(String::as_str).collect(),
     };
     let mut meta = super::outlets_label(&outlets);
-    let newest = app.articles[s.members[0]].published;
+    let newest = s.newest;
     meta.push_str(&format!(" · {}", super::time_ago(newest)));
     lines.push(Line::from(vec![
         indent(),
@@ -141,5 +155,18 @@ fn more_item(category: &str, count: usize) -> ListItem<'static> {
             format!("    + {count} more {stories} in {category}  ↵"),
             Style::default().fg(theme::GRAY),
         ),
+    ])
+}
+
+/// The divider above the finished Briefing.
+fn finished_item(done: i64, width: usize) -> ListItem<'static> {
+    let label = format!(
+        " Finished {} · already read ",
+        super::list::since_label(done)
+    );
+    let rule = "─".repeat(width.saturating_sub(label.width() + 2));
+    ListItem::new(vec![
+        Line::raw(""),
+        Line::styled(format!("─{label}{rule}"), Style::default().fg(theme::DIM)),
     ])
 }

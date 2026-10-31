@@ -45,7 +45,17 @@ pub enum BriefingRow {
 /// and at least this many stories of any size.
 const BRIEFING_MAX_PER_CATEGORY: usize = 5;
 const BRIEFING_MIN_PER_CATEGORY: usize = 2;
+/// When the Briefing was last finished with `M`, and where that finished
+/// Briefing started (shown greyed out until something new comes in).
 const BRIEFING_DONE_KEY: &str = "briefing_done";
+const BRIEFING_PREVIOUS_KEY: &str = "briefing_previous";
+
+/// What the last `M` changed, so `U` can put it back.
+pub struct FinishedBriefing {
+    links: Vec<String>,
+    done: Option<String>,
+    previous: Option<String>,
+}
 
 /// A modal panel drawn over the current screen; any key closes it.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -115,6 +125,9 @@ pub struct App {
     pub expanded: HashSet<usize>,
     /// Stories with nothing newer than this were already read through (`M`).
     pub briefing_since: i64,
+    /// Start of the last finished Briefing, if it is still within reach.
+    pub briefing_previous: Option<i64>,
+    pub undo_finish: Option<FinishedBriefing>,
     /// Articles published since `briefing_since`.
     pub briefing_new: usize,
     /// The outlets covering an article's story, for stories with two or
@@ -172,6 +185,8 @@ impl App {
             briefing_rows: Vec::new(),
             expanded: HashSet::new(),
             briefing_since: 0,
+            briefing_previous: None,
+            undo_finish: None,
             briefing_new: 0,
             coverage: HashMap::new(),
             should_quit: false,
@@ -205,20 +220,21 @@ impl App {
         Ok(())
     }
 
-    /// Lays out the Briefing: per category, the stories with something new
-    /// since it was last finished, widely covered ones first, and a "more"
-    /// row for the rest.
+    /// Lays out the Briefing: what is new since it was last finished, then
+    /// that finished Briefing (read, so greyed out) below it.
     pub fn build_briefing(&mut self) {
-        // Since it was last finished with `M`, two days at most.
-        let done: i64 = self
-            .db
-            .setting(BRIEFING_DONE_KEY)
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let now = chrono::Utc::now().timestamp();
-        self.briefing_since = done.max(now - crate::store::BRIEFING_WINDOW_SECS);
+        let setting = |key| {
+            self.db
+                .setting(key)
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse::<i64>().ok())
+        };
+        let oldest = chrono::Utc::now().timestamp() - crate::store::BRIEFING_WINDOW_SECS;
+        self.briefing_since = setting(BRIEFING_DONE_KEY).unwrap_or(0).max(oldest);
+        self.briefing_previous = setting(BRIEFING_PREVIOUS_KEY)
+            .map(|p| p.max(oldest))
+            .filter(|&p| p < self.briefing_since);
         self.briefing_new = self
             .articles
             .iter()
@@ -227,14 +243,23 @@ impl App {
 
         self.briefing_rows.clear();
         self.filtered.clear();
+        self.push_briefing_section(self.briefing_since, i64::MAX, true);
+        if let Some(previous) = self.briefing_previous {
+            self.push_briefing_section(previous, self.briefing_since, false);
+        }
+        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+    }
+
+    /// Rows for the stories whose newest article falls in `(from, to]`: per
+    /// category, widely covered ones first, and optionally a "more" row.
+    fn push_briefing_section(&mut self, from: i64, to: i64, with_more: bool) {
         let stories = &self.stories;
-        let articles = &self.articles;
         for category in &self.categories {
             // `stories` is best first; members are newest first.
             let fresh: Vec<usize> = (0..stories.len())
                 .filter(|&s| {
-                    stories[s].category == *category
-                        && articles[stories[s].members[0]].published > self.briefing_since
+                    let newest = stories[s].newest;
+                    stories[s].category == *category && newest > from && newest <= to
                 })
                 .collect();
             let shown = pick_stories(stories, &fresh);
@@ -248,14 +273,14 @@ impl App {
                     }
                 }
             }
-            if let Some(&hidden) = fresh.iter().find(|s| !shown.contains(s)) {
+            let hidden = fresh.iter().find(|s| !shown.contains(s));
+            if let Some(&hidden) = hidden.filter(|_| with_more) {
                 let rest = fresh.len() - shown.len();
                 self.briefing_rows
                     .push(BriefingRow::More(category.clone(), rest));
                 self.filtered.push(stories[hidden].head);
             }
         }
-        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
     /// Expands or collapses a story, keeping the cursor on it.
@@ -272,7 +297,7 @@ impl App {
     }
 
     /// `M` in the Briefing: everything in it is read, and the next Briefing
-    /// starts from now.
+    /// starts from now. This one stays below it, greyed out.
     pub fn finish_briefing(&mut self) -> Result<()> {
         let links: Vec<String> = self
             .articles
@@ -280,13 +305,41 @@ impl App {
             .filter(|a| a.published > self.briefing_since && a.unread)
             .map(|a| a.link.clone())
             .collect();
-        self.db.mark_read_many(&links)?;
+        self.db.set_unread_many(&links, false)?;
+        self.undo_finish = Some(FinishedBriefing {
+            links,
+            done: self.db.setting(BRIEFING_DONE_KEY)?,
+            previous: self.db.setting(BRIEFING_PREVIOUS_KEY)?,
+        });
         let now = chrono::Utc::now().timestamp();
+        self.db
+            .set_setting(BRIEFING_PREVIOUS_KEY, &self.briefing_since.to_string())?;
         self.db.set_setting(BRIEFING_DONE_KEY, &now.to_string())?;
         self.expanded.clear();
         self.selected = 0;
         self.reload_view()?;
-        self.notice = Some("Briefing done. The next one starts from now.".into());
+        self.notice = Some("Briefing done. U undoes it.".into());
+        Ok(())
+    }
+
+    /// `U`: takes back the last `M`, unread flags included.
+    pub fn undo_finish_briefing(&mut self) -> Result<()> {
+        let Some(finished) = self.undo_finish.take() else {
+            self.notice = Some("Nothing to undo".into());
+            return Ok(());
+        };
+        self.db.set_unread_many(&finished.links, true)?;
+        for (key, value) in [
+            (BRIEFING_DONE_KEY, finished.done),
+            (BRIEFING_PREVIOUS_KEY, finished.previous),
+        ] {
+            match value {
+                Some(value) => self.db.set_setting(key, &value)?,
+                None => self.db.remove_setting(key)?,
+            }
+        }
+        self.reload_view()?;
+        self.notice = Some("Briefing restored".into());
         Ok(())
     }
 
@@ -590,7 +643,7 @@ impl App {
         if links.is_empty() {
             return;
         }
-        let _ = self.db.mark_read_many(&links);
+        let _ = self.db.set_unread_many(&links, false);
         for &i in &self.filtered {
             if let Some(a) = self.articles.get_mut(i) {
                 a.unread = false;
@@ -822,6 +875,7 @@ mod tests {
             members: vec![0],
             head: 0,
             sources,
+            newest: 0,
             category: String::new(),
             score: 0.0,
         };

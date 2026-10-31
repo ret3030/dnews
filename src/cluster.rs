@@ -32,6 +32,8 @@ pub struct Story {
     pub head: usize,
     /// Distinct outlets covering it.
     pub sources: usize,
+    /// When its newest article came out.
+    pub newest: i64,
     pub category: String,
     pub score: f32,
 }
@@ -203,6 +205,7 @@ fn to_story(
         * 0.5f32.powf(hours / HALF_LIFE_HOURS)
         * if languages.len() > 1 { 1.3 } else { 1.0 };
     Story {
+        newest: group.newest,
         category: main_category(articles, &members, head),
         sources: sources.len(),
         head,

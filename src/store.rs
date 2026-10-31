@@ -160,6 +160,12 @@ impl Store {
         })
     }
 
+    pub fn remove_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let conn = &self.conn;
         conn.execute(
@@ -188,12 +194,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn mark_read_many(&self, links: &[String]) -> Result<()> {
+    pub fn set_unread_many(&self, links: &[String], unread: bool) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut stmt = tx.prepare("UPDATE articles SET unread = 0 WHERE link = ?1")?;
+            let mut stmt = tx.prepare("UPDATE articles SET unread = ?1 WHERE link = ?2")?;
             for link in links {
-                stmt.execute(params![link])?;
+                stmt.execute(params![unread as i64, link])?;
             }
         }
         tx.commit()?;
