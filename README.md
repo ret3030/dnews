@@ -97,7 +97,8 @@ Press `?` in dnews for this list.
 | `o` / `y` | open in the browser / copy the link |
 
 On a terminal at least 150 columns wide the article opens next to the list: `Enter` reads it there,
-`q` returns to the list, and `Shift+J` `Shift+K` preview the next and previous article.
+`q` returns to the list, and `Shift+J` `Shift+K` preview the next and previous article. In the
+Briefing, the right side shows the selected story with its summary and every outlet's article.
 
 ## Data
 
