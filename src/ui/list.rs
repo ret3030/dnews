@@ -189,11 +189,7 @@ pub fn day_label(published: i64, today: chrono::NaiveDate) -> String {
 
 /// Builds one list entry; `width` is the usable column count.
 fn article_item(row: &ArticleRow, width: usize, compact: bool) -> ListItem<'static> {
-    let source = if row.source.is_empty() {
-        super::domain(&row.link)
-    } else {
-        row.source.clone()
-    };
+    let source = row.source_name();
     let ago = super::time_ago(row.published);
 
     let (dot, title_style, source_style, meta_style) = if row.unread {

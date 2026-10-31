@@ -23,6 +23,17 @@ pub struct ArticleRow {
     pub scroll_pos: u16,
 }
 
+impl ArticleRow {
+    /// The feed's name, or the domain for rows stored before names existed.
+    pub fn source_name(&self) -> String {
+        if self.source.is_empty() {
+            crate::feed::domain(&self.link)
+        } else {
+            self.source.clone()
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NewArticle {
     pub category: String,
@@ -153,15 +164,6 @@ impl Store {
                 r.get(0)
             })?,
         )
-    }
-
-    pub fn mark_read(&self, link: &str) -> Result<()> {
-        let conn = &self.conn;
-        conn.execute(
-            "UPDATE articles SET unread = 0 WHERE link = ?1",
-            params![link],
-        )?;
-        Ok(())
     }
 
     pub fn set_unread(&self, link: &str, unread: bool) -> Result<()> {
@@ -440,7 +442,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        store.mark_read("https://example.com/c").unwrap();
+        store.set_unread("https://example.com/c", false).unwrap();
         let counts = store.unread_by_category().unwrap();
         assert_eq!(counts.get("World"), Some(&2));
         assert_eq!(counts.get("Tech"), None);

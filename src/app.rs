@@ -288,14 +288,6 @@ impl App {
         self.selected = next as usize;
     }
 
-    pub fn move_to_top(&mut self) {
-        self.selected = 0;
-    }
-
-    pub fn move_to_bottom(&mut self) {
-        self.selected = self.filtered.len().saturating_sub(1);
-    }
-
     /// Toggles saved-for-later on the current article.
     pub fn toggle_saved(&mut self) {
         let Some(article) = self.current_article() else {
@@ -346,11 +338,7 @@ impl App {
     /// debounce (which does not). Does nothing if that article is already
     /// loaded there.
     pub fn activate_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
-        let Some(row) = self
-            .filtered
-            .get(self.selected)
-            .and_then(|&i| self.articles.get(i))
-        else {
+        let Some(row) = self.selected_article() else {
             return;
         };
         if self.reader_article.as_ref().map(|a| a.link.as_str()) == Some(row.link.as_str()) {
@@ -365,21 +353,20 @@ impl App {
     /// `activate_selected` (the split-layout panel, on Enter there too),
     /// neither of which touches `self.screen` here.
     fn load_selected(&mut self, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
-        let Some(row_idx) = self.filtered.get(self.selected).copied() else {
+        let Some(row) = self.selected_article().cloned() else {
             return;
         };
-        let Some(row) = self.articles.get_mut(row_idx) else {
-            return;
-        };
-
-        let was_unread = std::mem::replace(&mut row.unread, false);
-        let row = row.clone();
-        let _ = self.db.mark_read(&row.link);
-        if was_unread {
+        self.save_scroll();
+        if row.unread {
+            let _ = self.db.set_unread(&row.link, false);
+            self.update_article(&row.link, |a| a.unread = false);
             self.refresh_counts();
         }
+        let row = ArticleRow {
+            unread: false,
+            ..row
+        };
 
-        self.save_scroll();
         self.reader_scroll = row.scroll_pos;
         self.reader_max_scroll.set(u16::MAX);
         self.reader_error = None;
@@ -418,9 +405,10 @@ impl App {
         });
     }
 
-    pub fn close_reader(&mut self) {
+    /// Empties the reader (full screen or panel), remembering the scroll
+    /// position first.
+    pub fn close_article(&mut self) {
         self.save_scroll();
-        self.screen = Screen::List;
         self.reader = None;
         self.reader_article = None;
         self.reader_loading = false;
@@ -428,19 +416,10 @@ impl App {
         self.reader_scroll = 0;
     }
 
-    /// `q`/`Esc` in the wide split layout while the panel is focused: hands
-    /// plain-vim-key control back to the list and clears the panel, so
-    /// browsing the list plainly again shows an empty panel rather than the
-    /// last-read article lingering — the panel only lights back up through
-    /// an explicit `Enter` or the Shift+J/K live preview.
-    pub fn unfocus_panel(&mut self) {
-        self.save_scroll();
-        self.panel_focused = false;
-        self.reader = None;
-        self.reader_article = None;
-        self.reader_loading = false;
-        self.reader_error = None;
-        self.reader_scroll = 0;
+    pub fn selected_article(&self) -> Option<&ArticleRow> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.articles.get(i))
     }
 
     /// The article the next action applies to: the one open in the reader
@@ -449,9 +428,7 @@ impl App {
         if self.screen == Screen::Reader || self.panel_focused {
             return self.reader_article.as_ref();
         }
-        self.filtered
-            .get(self.selected)
-            .and_then(|&i| self.articles.get(i))
+        self.selected_article()
     }
 
     pub fn current_link(&self) -> Option<String> {

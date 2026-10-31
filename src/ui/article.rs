@@ -75,12 +75,7 @@ fn render_header(f: &mut Frame, app: &App, title: Vec<String>, area: Rect) {
     let Some(article) = app.reader_article.as_ref() else {
         return;
     };
-    let source = if article.source.is_empty() {
-        super::domain(&article.link)
-    } else {
-        article.source.clone()
-    };
-    let mut meta = vec![source];
+    let mut meta = vec![article.source_name()];
     if let Some(date) = chrono::Local.timestamp_opt(article.published, 0).single() {
         meta.insert(0, date.format("%a %-d %b %Y, %H:%M").to_string());
     }
@@ -167,7 +162,7 @@ fn render_body(f: &mut Frame, app: &App, area: Rect) {
 /// When the full article can't be fetched, show why plus the feed's own
 /// summary, so there is still something to read.
 fn error_lines(app: &App, err: &str, width: usize) -> Vec<Line<'static>> {
-    let mut lines = document::wrap(
+    let mut lines = super::wrap(
         vec![(
             format!("Could not load the full article: {err}"),
             Style::default().fg(theme::RED),
@@ -187,7 +182,7 @@ fn error_lines(app: &App, err: &str, width: usize) -> Vec<Line<'static>> {
         .unwrap_or_default();
     if !summary.is_empty() {
         lines.push(Line::raw(""));
-        lines.extend(document::wrap(
+        lines.extend(super::wrap(
             vec![(summary, Style::default().fg(theme::FG))],
             width,
             vec![],

@@ -73,12 +73,6 @@ pub fn centered(area: Rect, max_width: u16) -> Rect {
     }
 }
 
-pub fn domain(url: &str) -> String {
-    let without_scheme = url.split("://").nth(1).unwrap_or(url);
-    let host = without_scheme.split('/').next().unwrap_or(without_scheme);
-    host.strip_prefix("www.").unwrap_or(host).to_string()
-}
-
 pub fn time_ago(published: i64) -> String {
     let now = chrono::Utc::now().timestamp();
     let diff = (now - published).max(0);
@@ -115,76 +109,136 @@ pub fn truncate(s: &str, max_width: usize) -> String {
     out
 }
 
-/// Word-wraps `s` to `width` display columns, keeping at most `max_lines`
-/// lines; if text is left over, the last line ends in an ellipsis. Words
-/// longer than a whole line are hard-split.
+/// Word-wraps plain text to `width` columns, keeping at most `max_lines`
+/// lines; the last one ends in an ellipsis if text was left over.
 pub fn wrap_words(s: &str, width: usize, max_lines: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0;
-    let mut overflow = false;
+    let mut lines: Vec<String> = wrap(
+        vec![(s.to_string(), Style::default())],
+        width,
+        vec![],
+        vec![],
+    )
+    .iter()
+    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+    .collect();
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            // `truncate` keeps the ellipsis when the line is already full.
+            *last = truncate(&format!("{last}…"), width);
+        }
+    }
+    lines
+}
 
-    'words: for word in s.split_whitespace() {
-        let mut word = word;
-        loop {
-            let ww = word.width();
-            let need = if cur.is_empty() { ww } else { cur_w + 1 + ww };
-            if need <= width {
-                if !cur.is_empty() {
-                    cur.push(' ');
+enum Token {
+    /// Text with no break opportunity inside, possibly spanning styles
+    /// ("report" + "[1]" + ",").
+    Word(Vec<(String, Style)>),
+    Space(Style),
+    Break,
+}
+
+fn tokenize(runs: Vec<(String, Style)>) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut word: Vec<(String, Style)> = Vec::new();
+    let finish = |word: &mut Vec<(String, Style)>, tokens: &mut Vec<Token>| {
+        if !word.is_empty() {
+            tokens.push(Token::Word(std::mem::take(word)));
+        }
+    };
+    for (text, style) in runs {
+        for c in text.chars() {
+            if c == '\n' {
+                finish(&mut word, &mut tokens);
+                tokens.push(Token::Break);
+            } else if c.is_whitespace() {
+                finish(&mut word, &mut tokens);
+                tokens.push(Token::Space(style));
+            } else {
+                match word.last_mut() {
+                    Some((s, st)) if *st == style => s.push(c),
+                    _ => word.push((c.to_string(), style)),
+                }
+            }
+        }
+    }
+    finish(&mut word, &mut tokens);
+    tokens
+}
+
+/// Word-wraps styled text to `width` columns. `first` prefixes the first
+/// line, `rest` every following one (for hanging indents).
+pub fn wrap(
+    runs: Vec<(String, Style)>,
+    width: usize,
+    first: Vec<Span<'static>>,
+    rest: Vec<Span<'static>>,
+) -> Vec<Line<'static>> {
+    let prefix_w = |p: &[Span]| p.iter().map(|s| s.content.width()).sum::<usize>();
+    // Always leave room for some text, however deep the indent.
+    let width = width.max(prefix_w(&first).max(prefix_w(&rest)) + 8);
+
+    let mut lines = Vec::new();
+    let mut cur: Vec<Span<'static>> = first;
+    let mut cur_w = prefix_w(&cur);
+    let mut has_text = false;
+    let mut space: Option<Style> = None;
+
+    let new_line = |lines: &mut Vec<Line<'static>>, cur: &mut Vec<Span<'static>>| {
+        lines.push(Line::from(std::mem::replace(cur, rest.clone())));
+        prefix_w(cur)
+    };
+
+    for token in tokenize(runs) {
+        match token {
+            Token::Space(style) => {
+                if has_text {
+                    space = Some(style);
+                }
+            }
+            Token::Break => {
+                cur_w = new_line(&mut lines, &mut cur);
+                has_text = false;
+                space = None;
+            }
+            Token::Word(segments) => {
+                let word_w: usize = segments.iter().map(|(s, _)| s.width()).sum();
+                let space_w = usize::from(space.is_some());
+                if has_text && cur_w + space_w + word_w > width {
+                    cur_w = new_line(&mut lines, &mut cur);
+                    space = None;
+                } else if let Some(style) = space.take() {
+                    cur.push(Span::styled(" ", style));
                     cur_w += 1;
                 }
-                cur.push_str(word);
-                cur_w += ww;
-                continue 'words;
-            }
-            if !cur.is_empty() {
-                lines.push(std::mem::take(&mut cur));
-                cur_w = 0;
-                if lines.len() == max_lines {
-                    overflow = true;
-                    break 'words;
+                if cur_w + word_w <= width {
+                    for (s, style) in segments {
+                        cur.push(Span::styled(s, style));
+                    }
+                    cur_w += word_w;
+                } else {
+                    // Longer than a whole line: split it character by character.
+                    for (s, style) in segments {
+                        let mut piece = String::new();
+                        for c in s.chars() {
+                            let cw = c.width().unwrap_or(0);
+                            if cur_w + cw > width {
+                                cur.push(Span::styled(std::mem::take(&mut piece), style));
+                                cur_w = new_line(&mut lines, &mut cur);
+                            }
+                            piece.push(c);
+                            cur_w += cw;
+                        }
+                        cur.push(Span::styled(piece, style));
+                    }
                 }
-                continue;
-            }
-            // A single word wider than the line: split it.
-            let mut head = String::new();
-            let mut hw = 0;
-            let mut split_at = word.len();
-            for (i, c) in word.char_indices() {
-                let w = c.width().unwrap_or(0);
-                if hw + w > width {
-                    split_at = i;
-                    break;
-                }
-                head.push(c);
-                hw += w;
-            }
-            lines.push(head);
-            word = &word[split_at..];
-            if lines.len() == max_lines {
-                overflow = !word.is_empty();
-                break 'words;
-            }
-            if word.is_empty() {
-                continue 'words;
+                has_text = true;
             }
         }
     }
-    if !cur.is_empty() {
-        if lines.len() < max_lines {
-            lines.push(cur);
-        } else {
-            overflow = true;
-        }
-    }
-    if overflow && let Some(last) = lines.last_mut() {
-        // `truncate` keeps the ellipsis when the line is already full.
-        *last = truncate(&format!("{last}…"), width);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
+    if has_text || lines.is_empty() {
+        lines.push(Line::from(cur));
     }
     lines
 }
@@ -194,7 +248,7 @@ pub fn wrap_words(s: &str, width: usize, max_lines: usize) -> Vec<String> {
 /// dim ellipsis span, so a row of tabs too wide for the terminal shrinks
 /// cleanly instead of being clipped mid-word at the `Rect` boundary.
 pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
-    let total_width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let total_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
     if total_width <= max_width {
         return line;
     }
@@ -209,12 +263,21 @@ pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
             break;
         }
         let remaining = budget - used;
-        let span_len = span.content.chars().count();
-        if span_len <= remaining {
-            used += span_len;
+        let span_w = span.content.width();
+        if span_w <= remaining {
+            used += span_w;
             spans.push(span);
         } else {
-            let cut: String = span.content.chars().take(remaining).collect();
+            let mut cut = String::new();
+            let mut cut_w = 0;
+            for c in span.content.chars() {
+                let w = c.width().unwrap_or(0);
+                if cut_w + w > remaining {
+                    break;
+                }
+                cut.push(c);
+                cut_w += w;
+            }
             spans.push(Span::styled(cut, span.style));
             break;
         }
@@ -228,17 +291,20 @@ pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
 /// typed always stays visible, instead of scrolling off the right edge on a
 /// narrow terminal.
 pub fn truncate_start(s: &str, max_width: usize) -> String {
-    let len = s.chars().count();
-    if len <= max_width {
+    if s.width() <= max_width {
         return s.to_string();
     }
-    if max_width <= 1 {
-        return "…".to_string();
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in s.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max_width.saturating_sub(1) {
+            break;
+        }
+        tail.push(c);
+        used += w;
     }
-    let skip = len - (max_width - 1);
-    let mut out = String::from("…");
-    out.extend(s.chars().skip(skip));
-    out
+    std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
 /// Greedily packs `phrases` (each an atomic hint like `"j/k scroll"`, never
@@ -250,13 +316,13 @@ pub fn wrap_hints(phrases: &[&str], sep: &str, max_width: usize) -> Vec<String> 
     if phrases.is_empty() {
         return vec![String::new()];
     }
-    let sep_len = sep.chars().count();
+    let sep_len = sep.width();
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut current_len = 0usize;
 
     for phrase in phrases {
-        let phrase_len = phrase.chars().count();
+        let phrase_len = phrase.width();
         let extra = if current.is_empty() {
             phrase_len
         } else {
@@ -783,5 +849,22 @@ mod tests {
             }
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn text_helpers_measure_wide_characters_by_display_width() {
+        use unicode_width::UnicodeWidthStr;
+        // Each of these characters takes two columns.
+        let wide = "日本語のニュース";
+        assert!(super::truncate(wide, 7).width() <= 7);
+        assert!(truncate_start(wide, 7).width() <= 7);
+        assert!(truncate_start(wide, 7).ends_with('ス'));
+        let line = Line::from(vec![Span::raw("新聞 "), Span::raw("天気予報")]);
+        let cut = truncate_line(line, 7);
+        let text: String = cut.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= 7, "{text:?}");
+        for l in wrap_hints(&["日本 語", "ニュース"], " ", 6) {
+            assert!(l.width() <= 8, "{l:?}");
+        }
     }
 }

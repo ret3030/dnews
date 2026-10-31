@@ -88,6 +88,10 @@ fn handle_reading(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
+/// The list screen. In the wide split layout, Enter loads the article into
+/// the side panel and focuses it; while focused, plain keys scroll the
+/// panel and q/Esc hands focus back. Shift+J/K always move the selection
+/// and preview it after a short pause.
 fn handle_list(
     app: &mut App,
     key: KeyEvent,
@@ -102,9 +106,7 @@ fn handle_list(
                 app.search_active = false;
                 app.apply_search();
             }
-            KeyCode::Enter => {
-                app.search_active = false;
-            }
+            KeyCode::Enter => app.search_active = false,
             KeyCode::Backspace => {
                 app.search.pop();
                 app.apply_search();
@@ -118,106 +120,58 @@ fn handle_list(
         return Ok(());
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+        app.start_reload(progress_tx);
+        return Ok(());
+    }
+
     if wide {
-        return handle_list_wide(app, key, progress_tx, reader_tx);
+        match key.code {
+            KeyCode::Char('J' | 'K') => {
+                app.move_selection(if key.code == KeyCode::Char('J') {
+                    1
+                } else {
+                    -1
+                });
+                app.schedule_preview();
+                return Ok(());
+            }
+            KeyCode::Enter => {
+                app.activate_selected(reader_tx);
+                app.panel_focused = true;
+                return Ok(());
+            }
+            _ => {}
+        }
+        if app.panel_focused {
+            match key.code {
+                // The panel stays empty until Enter or Shift+J/K loads one again.
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    app.close_article();
+                    app.panel_focused = false;
+                }
+                KeyCode::Char('s') => app.toggle_saved(),
+                _ => scroll_article(app, key),
+            }
+            return Ok(());
+        }
     }
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('/') => app.search_active = true,
-        KeyCode::Esc => {
-            if !app.search.is_empty() {
-                app.search.clear();
-                app.apply_search();
-            }
+        KeyCode::Esc if !app.search.is_empty() => {
+            app.search.clear();
+            app.apply_search();
         }
         KeyCode::Enter => app.open_selected(reader_tx),
         KeyCode::Tab => app.cycle_filter(1)?,
         KeyCode::BackTab => app.cycle_filter(-1)?,
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.start_reload(progress_tx);
-        }
         _ => scroll_list(app, key),
     }
-
     Ok(())
 }
 
-/// The wide split layout (see `ui::SPLIT_MIN_WIDTH`) has one keyboard
-/// focus that toggles between the list and the preview panel, tracked by
-/// `App::panel_focused`:
-///
-/// - Not focused (the default, and after `q`/`Esc` un-focuses): plain vim
-///   keys browse the list exactly like the narrow single-pane screen does
-///   (`scroll_list`) — nothing gets activated/marked read just by moving.
-/// - Focused (`Enter` on a list item, which also activates it into the
-///   panel): plain vim keys scroll the panel instead (`scroll_article`,
-///   the same logic the narrow full-screen reader uses), and `q`/`Esc`
-///   hands focus back to the list rather than clearing the panel.
-///
-/// Independent of that toggle, Shift+J/Shift+K always move the list
-/// selection and schedule a debounced preview load into the panel — so you
-/// can keep the list "in control" while still previewing as you browse.
-/// Category tabs and search are list-only actions, so they (along with
-/// `q`/`Esc`'s own meaning) are gated on focus too — same as the narrow
-/// full-screen reader, `/` and `Tab` do nothing while the panel is focused.
-fn handle_list_wide(
-    app: &mut App,
-    key: KeyEvent,
-    progress_tx: &mpsc::UnboundedSender<FetchEvent>,
-    reader_tx: &mpsc::UnboundedSender<ReaderEvent>,
-) -> Result<()> {
-    match key.code {
-        KeyCode::Char('J') => {
-            app.move_selection(1);
-            app.schedule_preview();
-            return Ok(());
-        }
-        KeyCode::Char('K') => {
-            app.move_selection(-1);
-            app.schedule_preview();
-            return Ok(());
-        }
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.start_reload(progress_tx);
-            return Ok(());
-        }
-        KeyCode::Enter => {
-            app.activate_selected(reader_tx);
-            app.panel_focused = true;
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    if app.panel_focused {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.unfocus_panel(),
-            KeyCode::Char('s') => app.toggle_saved(),
-            _ => scroll_article(app, key),
-        }
-    } else {
-        match key.code {
-            KeyCode::Char('q') => app.should_quit = true,
-            KeyCode::Char('/') => app.search_active = true,
-            KeyCode::Esc => {
-                if !app.search.is_empty() {
-                    app.search.clear();
-                    app.apply_search();
-                }
-            }
-            KeyCode::Tab => app.cycle_filter(1)?,
-            KeyCode::BackTab => app.cycle_filter(-1)?,
-            _ => scroll_list(app, key),
-        }
-    }
-
-    Ok(())
-}
-
-/// Classic list navigation: narrow single-pane screen's plain vim keys, and
-/// the wide split layout's list side while its panel isn't focused (see
-/// `handle_list_wide`).
 fn scroll_list(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('s') => app.toggle_saved(),
@@ -225,8 +179,8 @@ fn scroll_list(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => app.toggle_compact(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
-        KeyCode::Char('g') => app.move_to_top(),
-        KeyCode::Char('G') => app.move_to_bottom(),
+        KeyCode::Char('g') => app.selected = 0,
+        KeyCode::Char('G') => app.selected = app.filtered.len().saturating_sub(1),
         KeyCode::PageDown | KeyCode::Char('d') => app.move_selection(15),
         KeyCode::PageUp | KeyCode::Char('u') => app.move_selection(-15),
         _ => {}
@@ -235,7 +189,10 @@ fn scroll_list(app: &mut App, key: KeyEvent) {
 
 fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => app.close_reader(),
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.close_article();
+            app.screen = Screen::List;
+        }
         KeyCode::Char('s') => app.toggle_saved(),
         KeyCode::Char('J') => app.step_reader(1, reader_tx),
         KeyCode::Char('K') => app.step_reader(-1, reader_tx),
@@ -243,13 +200,9 @@ fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender
     }
 }
 
-/// Article scrolling: the narrow full-screen reader, and the wide split
-/// layout's panel while it's focused (see `handle_list_wide`).
-///
-/// Scrolling is clamped to `App::reader_max_scroll` (set by the renderer),
-/// so `G` lands on the last screen of text and `j`/`d` stop there too. The
-/// current offset is clamped first as well: after a resize it can sit past
-/// the new end, and `k` would otherwise need several presses to move at all.
+/// Scrolls the article, clamped to `App::reader_max_scroll` so `G`, `j` and
+/// `d` stop at the end. The current offset is clamped first too: after a
+/// resize it can sit past the new end.
 fn scroll_article(app: &mut App, key: KeyEvent) {
     let max = app.reader_max_scroll.get();
     let cur = app.reader_scroll.min(max);

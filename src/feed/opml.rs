@@ -31,7 +31,7 @@ fn walk(node: Node, category: &str, feeds: &mut Vec<Feed>) {
             .map(str::trim)
             .filter(|n| !n.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| crate::ui::domain(url));
+            .unwrap_or_else(|| super::domain(url));
         feeds.push(Feed {
             url: url.to_string(),
             category: category.to_string(),
