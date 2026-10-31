@@ -37,7 +37,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let (title, domain, date, saved) = match row {
         Some(r) => {
             let domain = super::domain(&r.link);
-            let date = chrono::Utc
+            let date = chrono::Local
                 .timestamp_opt(r.published, 0)
                 .single()
                 .map(|d| d.format("%a %d %b %Y  ·  %H:%M").to_string())
@@ -125,10 +125,19 @@ fn render_body(f: &mut Frame, app: &App, area: Rect) {
                 .collect::<Vec<_>>(),
         )
         .wrap(Wrap { trim: false })
-        .scroll((app.reader_scroll, 0))
     } else {
         Paragraph::new("")
     };
+
+    // Remember how far the body can scroll at this width/height, so the
+    // scroll keys can stop at the last line (see `App::reader_max_scroll`).
+    // Also clamp what we draw, in case the terminal grew since the last key.
+    let lines = body.line_count(inner.width);
+    let max = u16::try_from(lines)
+        .unwrap_or(u16::MAX)
+        .saturating_sub(inner.height);
+    app.reader_max_scroll.set(max);
+    let body = body.scroll((app.reader_scroll.min(max), 0));
     f.render_widget(body, inner);
 }
 

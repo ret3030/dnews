@@ -56,6 +56,6 @@ mod tests {
         }
         let categories: std::collections::HashSet<_> =
             feeds.iter().map(|f| f.category.clone()).collect();
-        assert!(categories.contains("Tech & Dev"));
+        assert!(categories.contains("Věda & Tech"));
     }
 }

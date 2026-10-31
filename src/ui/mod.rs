@@ -406,4 +406,58 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+    #[test]
+    fn reader_max_scroll_lands_on_the_last_line_of_the_article() {
+        let path =
+            std::env::temp_dir().join(format!("dnews_ui_test_scroll_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Store::open(&path).unwrap();
+        db.init_schema().unwrap();
+        db.upsert_batch(&[NewArticle {
+            category: String::new(),
+            title: "Long Article".into(),
+            link: "https://example.com/long".into(),
+            published: chrono::Utc::now().timestamp(),
+        }])
+        .unwrap();
+
+        let mut app = App::new(db, vec![]);
+        app.reload_view().unwrap();
+        app.screen = crate::app::Screen::Reader;
+        app.reader_article = app.articles.first().cloned();
+        let text: Vec<String> = (1..=100).map(|i| format!("line {i:03}")).collect();
+        app.reader = Some(crate::reader::ReaderContent {
+            text: text.join("\n"),
+        });
+
+        dump(100, 30, &app);
+        let max = app.reader_max_scroll.get();
+        assert!(
+            max > 0 && max < 100,
+            "max scroll should be the text height minus the visible body, got {max}"
+        );
+
+        // Jumping to the end must show the last line, and nothing past it.
+        app.reader_scroll = max;
+        let out = dump(100, 30, &app);
+        assert!(
+            out.contains("line 100"),
+            "last line not visible at max scroll"
+        );
+        assert!(
+            !out.contains("line 001"),
+            "first line still visible, so max scroll is too small"
+        );
+
+        // One line less must hide the last line, so `max` is not padded with
+        // blank space past the end.
+        app.reader_scroll = max - 1;
+        let out = dump(100, 30, &app);
+        assert!(
+            !out.contains("line 100"),
+            "max scroll leaves blank space below the last line"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

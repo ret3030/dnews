@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use anyhow::Result;
 use tokio::sync::mpsc;
 
@@ -48,6 +50,12 @@ pub struct App {
     /// (see `apply_reader_event`).
     pub reader_article: Option<ArticleRow>,
     pub reader_scroll: u16,
+    /// Largest useful `reader_scroll` for the article as last rendered:
+    /// wrapped line count minus the visible body height. Written by the
+    /// renderer (which only gets `&App`, hence the `Cell`) and read by the
+    /// scroll keys so `G`, `j` and `d` stop at the end of the text instead of
+    /// scrolling into blank space. `u16::MAX` until the first render.
+    pub reader_max_scroll: Cell<u16>,
     pub reader_loading: bool,
     pub reader_error: Option<String>,
 
@@ -97,6 +105,7 @@ impl App {
             reader: None,
             reader_article: None,
             reader_scroll: 0,
+            reader_max_scroll: Cell::new(u16::MAX),
             reader_loading: false,
             reader_error: None,
             unread_count: 0,

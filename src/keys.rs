@@ -188,22 +188,24 @@ fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender
 
 /// Article scrolling: the narrow full-screen reader, and the wide split
 /// layout's panel while it's focused (see `handle_list_wide`).
+///
+/// Scrolling is clamped to `App::reader_max_scroll` (set by the renderer),
+/// so `G` lands on the last screen of text and `j`/`d` stop there too. The
+/// current offset is clamped first as well: after a resize it can sit past
+/// the new end, and `k` would otherwise need several presses to move at all.
 fn scroll_article(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.reader_scroll = app.reader_scroll.saturating_add(1)
-        }
-        KeyCode::Up | KeyCode::Char('k') => app.reader_scroll = app.reader_scroll.saturating_sub(1),
-        KeyCode::Char('g') => app.reader_scroll = 0,
-        KeyCode::Char('G') => app.reader_scroll = u16::MAX / 2,
-        KeyCode::PageDown | KeyCode::Char('d') => {
-            app.reader_scroll = app.reader_scroll.saturating_add(15)
-        }
-        KeyCode::PageUp | KeyCode::Char('u') => {
-            app.reader_scroll = app.reader_scroll.saturating_sub(15)
-        }
-        _ => {}
-    }
+    let max = app.reader_max_scroll.get();
+    let cur = app.reader_scroll.min(max);
+    let next = match key.code {
+        KeyCode::Down | KeyCode::Char('j') => cur.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => cur.saturating_sub(1),
+        KeyCode::Char('g') => 0,
+        KeyCode::Char('G') => max,
+        KeyCode::PageDown | KeyCode::Char('d') => cur.saturating_add(15),
+        KeyCode::PageUp | KeyCode::Char('u') => cur.saturating_sub(15),
+        _ => return,
+    };
+    app.reader_scroll = next.min(max);
 }
 
 #[cfg(test)]
@@ -545,5 +547,79 @@ mod tests {
             !app.search_active,
             "/ must not open search while reading in the panel"
         );
+    }
+    #[tokio::test]
+    async fn article_scrolling_stops_at_the_end_of_the_text() {
+        let mut app = test_app();
+        let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
+        let (reader_tx, _reader_rx) = mpsc::unbounded_channel();
+
+        handle(
+            &mut app,
+            key(KeyCode::Enter),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        // What the renderer would store for an article 20 lines past the screen.
+        app.reader_max_scroll.set(20);
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('G')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            app.reader_scroll, 20,
+            "G should land exactly on the last screen"
+        );
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('j')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        handle(
+            &mut app,
+            key(KeyCode::Char('d')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.reader_scroll, 20, "j/d must not scroll past the end");
+
+        handle(
+            &mut app,
+            key(KeyCode::Char('k')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            app.reader_scroll, 19,
+            "k should move up right away from the end"
+        );
+
+        // After a resize the stored offset can be past the new end: the first
+        // k must still move up one line from the visible position.
+        app.reader_scroll = 50;
+        handle(
+            &mut app,
+            key(KeyCode::Char('k')),
+            &progress_tx,
+            &reader_tx,
+            false,
+        )
+        .unwrap();
+        assert_eq!(app.reader_scroll, 19);
     }
 }
