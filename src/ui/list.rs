@@ -88,18 +88,21 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
 
 /// Joins the tab span groups into one line of at most `width` columns. When
 /// they overflow, tabs are dropped from the left (marked by `…`) until the
-/// active one fits, and the rest is cut on the right.
+/// active one and the tab after it fit, so Tab never moves onto a hidden tab.
 fn scrolled_tabs_line(tabs: Vec<Vec<Span<'static>>>, active: usize, width: usize) -> Line<'static> {
     let widths: Vec<usize> = tabs
         .iter()
         .map(|t| t.iter().map(|s| s.content.width()).sum())
         .collect();
     let panel = Style::default().bg(theme::PANEL);
-    // One column for the lead (space or `…`), one kept for a right ellipsis.
-    let budget = width.saturating_sub(2);
+    let last = widths.len().saturating_sub(1);
+    let shown_to = (active + 1).min(last);
+    // One column for the lead (space or `…`), one for a right ellipsis when
+    // tabs remain past `shown_to`.
+    let budget = width.saturating_sub(if shown_to < last { 2 } else { 1 });
     let mut first = 0;
     if 1 + widths.iter().sum::<usize>() > width {
-        while first < active && widths[first..=active].iter().sum::<usize>() > budget {
+        while first < active && widths[first..=shown_to].iter().sum::<usize>() > budget {
             first += 1;
         }
     }
@@ -536,6 +539,7 @@ mod tests {
             assert!(out.width() <= 30, "too wide: {out:?}");
             assert!(out.starts_with('…'), "no left marker: {out:?}");
             assert!(out.contains("Stocks 120"), "active tab hidden: {out:?}");
+            assert!(out.contains("Saved"), "next tab hidden: {out:?}");
             assert!(!out.contains("Briefing"), "did not scroll: {out:?}");
         }
     }
