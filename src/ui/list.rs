@@ -217,8 +217,8 @@ pub fn day_label(published: i64, today: chrono::NaiveDate) -> String {
     }
 }
 
-/// Builds one list entry; `width` is the usable column count.
-/// One article; `others` is how many other outlets cover its story.
+/// One article; `width` is the usable column count and `others` how many
+/// other outlets cover its story.
 fn article_item(row: &ArticleRow, width: usize, compact: bool, others: usize) -> ListItem<'static> {
     let source = row.source_name();
     let ago = super::time_ago(row.published);
@@ -464,7 +464,12 @@ fn footer_lines(app: &App, split: bool, width: usize) -> Vec<Line<'static>> {
             Span::styled(suffix, Style::default().fg(theme::GRAY)),
         ])];
     }
-    if let Some(notice) = list_notice(app, split) {
+    // With the split layout's panel focused, the panel's footer shows the notice.
+    if let Some(notice) = app
+        .notice
+        .as_ref()
+        .filter(|_| !(split && app.panel_focused))
+    {
         return one(
             format!(" {}", super::truncate(notice, width.saturating_sub(1))),
             theme::ACCENT,
@@ -483,14 +488,6 @@ fn footer_lines(app: &App, split: bool, width: usize) -> Vec<Line<'static>> {
         .into_iter()
         .map(|l| Line::styled(format!(" {l}"), Style::default().fg(theme::GRAY)))
         .collect()
-}
-
-/// The notice belongs to the list footer unless the split layout's article
-/// panel has focus (then the panel's footer shows it).
-fn list_notice(app: &App, split: bool) -> Option<&String> {
-    app.notice
-        .as_ref()
-        .filter(|_| !(split && app.panel_focused))
 }
 
 #[cfg(test)]

@@ -114,10 +114,6 @@ impl Store {
             ListFilter::Category(c) => ("category = ?1", Some(c.clone())),
             ListFilter::Saved => ("saved = 1", None),
         };
-        self.query(condition, param)
-    }
-
-    fn query(&self, condition: &str, param: Option<String>) -> Result<Vec<ArticleRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT title, link, published, unread, saved, content_text, source, summary,
                     scroll_pos, category

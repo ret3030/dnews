@@ -183,7 +183,16 @@ fn handle_list(
         KeyCode::Char('M') if app.filter == ListFilter::Briefing && app.story.is_none() => {
             app.finish_briefing()?
         }
-        _ => scroll_list(app, key),
+        KeyCode::Char('s') => app.toggle_saved(),
+        KeyCode::Char('M') => app.mark_all_read(),
+        KeyCode::Char('c') => app.toggle_compact(),
+        KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
+        KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
+        KeyCode::Char('g') => app.selected = 0,
+        KeyCode::Char('G') => app.selected = app.filtered.len().saturating_sub(1),
+        KeyCode::PageDown | KeyCode::Char('d') => app.move_selection(15),
+        KeyCode::PageUp | KeyCode::Char('u') => app.move_selection(-15),
+        _ => {}
     }
     Ok(())
 }
@@ -207,21 +216,6 @@ fn handle_search(app: &mut App, key: KeyEvent) {
         _ => return,
     }
     app.apply_search();
-}
-
-fn scroll_list(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('s') => app.toggle_saved(),
-        KeyCode::Char('M') => app.mark_all_read(),
-        KeyCode::Char('c') => app.toggle_compact(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
-        KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
-        KeyCode::Char('g') => app.selected = 0,
-        KeyCode::Char('G') => app.selected = app.filtered.len().saturating_sub(1),
-        KeyCode::PageDown | KeyCode::Char('d') => app.move_selection(15),
-        KeyCode::PageUp | KeyCode::Char('u') => app.move_selection(-15),
-        _ => {}
-    }
 }
 
 fn handle_reader(app: &mut App, key: KeyEvent, reader_tx: &mpsc::UnboundedSender<ReaderEvent>) {

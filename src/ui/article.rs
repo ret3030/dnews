@@ -239,7 +239,8 @@ fn progress(app: &App) -> Option<String> {
 }
 
 fn footer_lines(app: &App, panel: bool, width: usize) -> Vec<Line<'static>> {
-    let focus = reader_has_focus(app, panel);
+    // Whether keys go to the article, so its footer shows notices.
+    let focus = !panel || app.panel_focused;
     let accent = Style::default().fg(theme::ACCENT);
     if focus && !app.link_input.is_empty() {
         return vec![Line::styled(
@@ -263,9 +264,4 @@ fn footer_lines(app: &App, panel: bool, width: usize) -> Vec<Line<'static>> {
         .into_iter()
         .map(|l| Line::styled(format!(" {l}"), Style::default().fg(color)))
         .collect()
-}
-
-/// Whether keys currently go to the article (so its footer shows notices).
-fn reader_has_focus(app: &App, panel: bool) -> bool {
-    !panel || app.panel_focused
 }
