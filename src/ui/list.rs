@@ -88,7 +88,7 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
 
 /// Joins the tab span groups into one line of at most `width` columns. When
 /// they overflow, tabs are dropped from the left (marked by `…`) until the
-/// active one and the tab after it fit, so Tab never moves onto a hidden tab.
+/// active one fits, so the bar only moves once Tab reaches a cut-off tab.
 fn scrolled_tabs_line(tabs: Vec<Vec<Span<'static>>>, active: usize, width: usize) -> Line<'static> {
     let widths: Vec<usize> = tabs
         .iter()
@@ -96,13 +96,12 @@ fn scrolled_tabs_line(tabs: Vec<Vec<Span<'static>>>, active: usize, width: usize
         .collect();
     let panel = Style::default().bg(theme::PANEL);
     let last = widths.len().saturating_sub(1);
-    let shown_to = (active + 1).min(last);
     // One column for the lead (space or `…`), one for a right ellipsis when
-    // tabs remain past `shown_to`.
-    let budget = width.saturating_sub(if shown_to < last { 2 } else { 1 });
+    // tabs remain past the active one.
+    let budget = width.saturating_sub(if active < last { 2 } else { 1 });
     let mut first = 0;
     if 1 + widths.iter().sum::<usize>() > width {
-        while first < active && widths[first..=shown_to].iter().sum::<usize>() > budget {
+        while first < active && widths[first..=active].iter().sum::<usize>() > budget {
             first += 1;
         }
     }
@@ -536,9 +535,18 @@ mod tests {
             assert!(out.width() <= 30, "too wide: {out:?}");
             assert!(out.starts_with('…'), "no left marker: {out:?}");
             assert!(out.contains("Stocks 120"), "active tab hidden: {out:?}");
-            assert!(out.contains("Saved"), "next tab hidden: {out:?}");
             assert!(!out.contains("Briefing"), "did not scroll: {out:?}");
         }
+    }
+
+    #[test]
+    fn the_bar_stays_put_while_the_active_tab_is_fully_visible() {
+        // "World 1033" fits whole, "Markets 288" after it is cut off.
+        let line = scrolled_tabs_line(compact_tabs(&labels(2)), 2, 37);
+        let out = text(&line);
+        assert!(out.starts_with(" Briefing"), "scrolled too early: {out:?}");
+        assert!(out.contains("World 1033"), "{out:?}");
+        assert!(out.ends_with('…'), "{out:?}");
     }
 
     #[test]
