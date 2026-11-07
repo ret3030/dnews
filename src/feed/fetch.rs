@@ -15,6 +15,10 @@ pub enum FetchEvent {
 
 const MAX_CONCURRENT: usize = 16;
 const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+/// Some WordPress feeds (Teslarati) take around 10 s to start answering, so
+/// the whole request gets more room than the connection does.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn spawn_reload(
     feeds: Vec<Feed>,
@@ -38,7 +42,8 @@ pub fn spawn_reload(
 
         let client = reqwest::Client::builder()
             .user_agent(concat!("dnews/", env!("CARGO_PKG_VERSION")))
-            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .unwrap_or_default();
 
