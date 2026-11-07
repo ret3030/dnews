@@ -73,78 +73,103 @@ fn tab_labels(app: &App) -> Vec<(String, bool)> {
 
 fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     let labels = tab_labels(app);
-    let line = if area.width <= COMPACT_TABS_MAX_WIDTH {
-        compact_tabs_line(&labels)
+    let tabs = if area.width <= COMPACT_TABS_MAX_WIDTH {
+        compact_tabs(&labels)
     } else {
-        pill_tabs_line(&labels)
+        pill_tabs(&labels)
     };
-    let line = super::truncate_line(line, area.width as usize);
+    let active = labels.iter().position(|(_, a)| *a).unwrap_or(0);
+    let line = scrolled_tabs_line(tabs, active, area.width as usize);
     f.render_widget(
         Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
         area,
     );
 }
 
-/// Plain text tabs separated by `·`; safe without a Nerd Font.
-fn compact_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
+/// Joins the tab span groups into one line of at most `width` columns. When
+/// they overflow, tabs are dropped from the left (marked by `…`) until the
+/// active one fits, and the rest is cut on the right.
+fn scrolled_tabs_line(tabs: Vec<Vec<Span<'static>>>, active: usize, width: usize) -> Line<'static> {
+    let widths: Vec<usize> = tabs
+        .iter()
+        .map(|t| t.iter().map(|s| s.content.width()).sum())
+        .collect();
     let panel = Style::default().bg(theme::PANEL);
-    let mut spans: Vec<Span> = vec![Span::styled(" ", panel)];
-    for (i, (label, active)) in labels.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().fg(theme::DIM).bg(theme::PANEL),
-            ));
+    // One column for the lead (space or `…`), one kept for a right ellipsis.
+    let budget = width.saturating_sub(2);
+    let mut first = 0;
+    if 1 + widths.iter().sum::<usize>() > width {
+        while first < active && widths[first..=active].iter().sum::<usize>() > budget {
+            first += 1;
         }
-        let style = if *active {
-            Style::default()
-                .fg(theme::ACCENT)
-                .bg(theme::PANEL)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::GRAY).bg(theme::PANEL)
-        };
-        spans.push(Span::styled(label.clone(), style));
     }
-    Line::from(spans)
+    let lead = if first == 0 {
+        Span::styled(" ", panel)
+    } else {
+        Span::styled("…", Style::default().fg(theme::DIM).bg(theme::PANEL))
+    };
+    let mut spans = vec![lead];
+    spans.extend(tabs.into_iter().skip(first).flatten());
+    super::truncate_line(Line::from(spans), width)
 }
 
-fn pill_tabs_line(labels: &[(String, bool)]) -> Line<'static> {
-    let panel = Style::default().bg(theme::PANEL);
-    let mut spans: Vec<Span> = vec![Span::styled(" ", panel)];
-
-    for (label, active) in labels {
-        let text = if *label == "Saved" {
-            format!(" \u{f005} {label} ")
-        } else {
-            format!(" {label} ")
-        };
-        if *active {
-            spans.push(Span::styled(
-                LEFT_CAP.to_string(),
-                Style::default().fg(theme::ACCENT).bg(theme::PANEL),
-            ));
-            spans.push(Span::styled(
-                text,
+/// Plain text tabs separated by `·`; safe without a Nerd Font.
+fn compact_tabs(labels: &[(String, bool)]) -> Vec<Vec<Span<'static>>> {
+    let separator = Span::styled(" · ", Style::default().fg(theme::DIM).bg(theme::PANEL));
+    labels
+        .iter()
+        .enumerate()
+        .map(|(i, (label, active))| {
+            let style = if *active {
                 Style::default()
-                    .fg(theme::BG)
-                    .bg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(
-                RIGHT_CAP.to_string(),
-                Style::default().fg(theme::ACCENT).bg(theme::PANEL),
-            ));
-        } else {
-            spans.push(Span::styled(
-                text,
-                Style::default().fg(theme::GRAY).bg(theme::PANEL),
-            ));
-        }
-        spans.push(Span::styled(" ", panel));
-    }
+                    .fg(theme::ACCENT)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::GRAY).bg(theme::PANEL)
+            };
+            let tab = Span::styled(label.clone(), style);
+            if i + 1 < labels.len() {
+                vec![tab, separator.clone()]
+            } else {
+                vec![tab]
+            }
+        })
+        .collect()
+}
 
-    Line::from(spans)
+fn pill_tabs(labels: &[(String, bool)]) -> Vec<Vec<Span<'static>>> {
+    let panel = Style::default().bg(theme::PANEL);
+    labels
+        .iter()
+        .map(|(label, active)| {
+            let text = if *label == "Saved" {
+                format!(" \u{f005} {label} ")
+            } else {
+                format!(" {label} ")
+            };
+            if *active {
+                let cap = Style::default().fg(theme::ACCENT).bg(theme::PANEL);
+                vec![
+                    Span::styled(LEFT_CAP.to_string(), cap),
+                    Span::styled(
+                        text,
+                        Style::default()
+                            .fg(theme::BG)
+                            .bg(theme::ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(RIGHT_CAP.to_string(), cap),
+                    Span::styled(" ", panel),
+                ]
+            } else {
+                vec![
+                    Span::styled(text, Style::default().fg(theme::GRAY).bg(theme::PANEL)),
+                    Span::styled(" ", panel),
+                ]
+            }
+        })
+        .collect()
 }
 
 fn render_unread(f: &mut Frame, app: &App, area: Rect) {
@@ -463,4 +488,63 @@ fn list_notice(app: &App, split: bool) -> Option<&String> {
     app.notice
         .as_ref()
         .filter(|_| !(split && app.panel_focused))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn labels(active: usize) -> Vec<(String, bool)> {
+        [
+            "Briefing",
+            "All 3648",
+            "World 1033",
+            "Markets 288",
+            "Stocks 120",
+            "Saved",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.to_string(), i == active))
+        .collect()
+    }
+
+    #[test]
+    fn tabs_that_fit_are_shown_whole_from_the_left() {
+        let line = scrolled_tabs_line(compact_tabs(&labels(4)), 4, 100);
+        assert_eq!(
+            text(&line),
+            " Briefing · All 3648 · World 1033 · Markets 288 · Stocks 120 · Saved"
+        );
+    }
+
+    #[test]
+    fn overflowing_tabs_scroll_so_the_active_tab_stays_visible() {
+        for compact in [true, false] {
+            let l = labels(4);
+            let tabs = if compact {
+                compact_tabs(&l)
+            } else {
+                pill_tabs(&l)
+            };
+            let line = scrolled_tabs_line(tabs, 4, 30);
+            let out = text(&line);
+            assert!(out.width() <= 30, "too wide: {out:?}");
+            assert!(out.starts_with('…'), "no left marker: {out:?}");
+            assert!(out.contains("Stocks 120"), "active tab hidden: {out:?}");
+            assert!(!out.contains("Briefing"), "did not scroll: {out:?}");
+        }
+    }
+
+    #[test]
+    fn an_early_active_tab_keeps_the_bar_at_the_start() {
+        let line = scrolled_tabs_line(compact_tabs(&labels(0)), 0, 30);
+        let out = text(&line);
+        assert!(out.starts_with(" Briefing"), "{out:?}");
+        assert!(out.ends_with('…'), "{out:?}");
+    }
 }
